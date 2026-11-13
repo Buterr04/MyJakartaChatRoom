@@ -18,10 +18,12 @@ import site.buterr.finalchat.chat.ChatEndpoint;
 import site.buterr.finalchat.filter.AuthFilter;
 import site.buterr.finalchat.listener.SessionLifecycleListener;
 import site.buterr.finalchat.servlet.LoginServlet;
+import site.buterr.finalchat.servlet.RegisterServlet;
 import site.buterr.finalchat.servlet.LogoutServlet;
 import site.buterr.finalchat.servlet.MeServlet;
 import site.buterr.finalchat.servlet.MessagesServlet;
 import site.buterr.finalchat.servlet.UsersServlet;
+import site.buterr.finalchat.store.ChatRepository;
 import site.buterr.finalchat.store.ChatRoom;
 import site.buterr.finalchat.store.ChatRoomHolder;
 
@@ -33,7 +35,8 @@ import site.buterr.finalchat.store.ChatRoomHolder;
  * jakarta.websocket 编程模型，servlet、filter、listener、endpoint 一个不少。</p>
  *
  * <p>可选环境变量：{@code FINAL_PORT}（默认 8080）、
- * {@code FINAL_STATIC_DIR}（前端构建产物目录，默认自动探测 ../frontend/dist）。</p>
+ * {@code FINAL_STATIC_DIR}（前端构建产物目录，默认自动探测 ../frontend/dist）、
+ * {@code FINAL_DB_PATH}（SQLite 数据库，默认 final-chatroom.db）。</p>
  */
 public final class Main {
 
@@ -44,7 +47,8 @@ public final class Main {
 
     public static void main(String[] args) throws Exception {
         int port = Integer.parseInt(System.getenv().getOrDefault("FINAL_PORT", String.valueOf(DEFAULT_PORT)));
-        ChatRoom chatRoom = new ChatRoom(ChatRoom.MAX_HISTORY);
+        ChatRepository repository = new ChatRepository(resolveDatabasePath());
+        ChatRoom chatRoom = new ChatRoom(ChatRoom.MAX_HISTORY, repository);
         ChatRoomHolder.set(chatRoom);
 
         Tomcat tomcat = new Tomcat();
@@ -85,7 +89,7 @@ public final class Main {
         // 显式把 WebSocket 端点交给 WsSci 注册，内嵌模式下不依赖类路径扫描
         ctx.addServletContainerInitializer(new WsSci(), Set.<Class<?>>of(ChatEndpoint.class));
 
-        // 登录态过滤器：/api/* 除 /api/login 外都要求已登录，对应 PR04 的 AuthFilter
+        // 登录态过滤器：/api/* 除注册和登录外都要求已登录，对应 PR04 的 AuthFilter
         FilterDef authDef = new FilterDef();
         authDef.setFilterName("authFilter");
         authDef.setFilter(new AuthFilter());
@@ -95,7 +99,8 @@ public final class Main {
         authMap.addURLPattern("/api/*");
         ctx.addFilterMap(authMap);
 
-        Tomcat.addServlet(ctx, "loginServlet", new LoginServlet(chatRoom)).addMapping("/api/login");
+        Tomcat.addServlet(ctx, "registerServlet", new RegisterServlet(repository)).addMapping("/api/register");
+        Tomcat.addServlet(ctx, "loginServlet", new LoginServlet(chatRoom, repository)).addMapping("/api/login");
         Tomcat.addServlet(ctx, "meServlet", new MeServlet()).addMapping("/api/me");
         Tomcat.addServlet(ctx, "logoutServlet", new LogoutServlet()).addMapping("/api/logout");
         Tomcat.addServlet(ctx, "usersServlet", new UsersServlet(chatRoom)).addMapping("/api/users");
@@ -107,7 +112,12 @@ public final class Main {
         tomcat.getServer().await();
     }
 
-    /**
+    private static Path resolveDatabasePath() {
+        String configured = System.getenv("FINAL_DB_PATH");
+        return configured == null || configured.isBlank() ? Path.of("final-chatroom.db") : Path.of(configured);
+    }
+
+/**
      * 前端构建产物目录的探测顺序：环境变量 → ../frontend/dist（从 backend 目录启动）→
      * frontend/dist（从仓库根目录启动）→ 临时空目录（纯 API 模式）。
      */

@@ -29,7 +29,7 @@ public class AuthFilter implements Filter {
         HttpServletResponse response = (HttpServletResponse) resp;
         request.setCharacterEncoding("UTF-8");
 
-        if ("/api/login".equals(request.getServletPath())) {
+        if ("/api/login".equals(request.getServletPath()) || "/api/register".equals(request.getServletPath())) {
             chain.doFilter(req, resp);
             return;
         }

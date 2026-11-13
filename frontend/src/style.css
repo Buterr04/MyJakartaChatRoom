@@ -83,13 +83,37 @@ input {
   font-size: 14px;
 }
 
-.field {
-  display: flex;
+.auth-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-md);
+  background: var(--primary-soft);
+}
+
+.auth-tabs button {
+  padding: 9px;
+  color: var(--muted);
+  border-radius: 9px;
+  background: transparent;
+}
+
+.auth-tabs button.active {
+  color: var(--primary-dark);
+  font-weight: 600;
+  background: var(--card);
+  box-shadow: 0 1px 4px rgba(31, 41, 72, 0.10);
+}
+
+.auth-fields {
+  display: grid;
   gap: 10px;
 }
 
-.field input {
-  flex: 1;
+.auth-fields input {
+  width: 100%;
   height: 46px;
   padding: 0 14px;
   border: 1.5px solid var(--line);
@@ -98,13 +122,13 @@ input {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.field input:focus {
+.auth-fields input:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(79, 109, 245, 0.15);
 }
 
-.field button {
-  min-width: 92px;
+.auth-fields button[type="submit"] {
+  min-height: 46px;
   border-radius: var(--radius-md);
   background: var(--primary);
   color: #fff;
@@ -112,22 +136,25 @@ input {
   transition: background 0.15s;
 }
 
-.field button:hover:not(:disabled) {
+.auth-fields button[type="submit"]:hover:not(:disabled) {
   background: var(--primary-dark);
 }
 
-.field button:disabled {
+.auth-fields button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
 
-.form-error {
+.form-error,
+.form-success {
   margin: 14px 0 0;
   min-height: 20px;
-  color: var(--danger);
   font-size: 13px;
   text-align: left;
 }
+
+.form-error { color: var(--danger); }
+.form-success { color: #168253; }
 
 .login-hint {
   margin: 6px 0 0;

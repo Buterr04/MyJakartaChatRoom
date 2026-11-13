@@ -20,6 +20,7 @@ public class MeServlet extends HttpServlet {
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
         HttpSession session = req.getSession(false);
         JsonUtil.write(resp, HttpServletResponse.SC_OK,
-                Map.of("username", String.valueOf(session.getAttribute("username"))));
+                Map.of("username", String.valueOf(session.getAttribute("username")),
+                        "displayName", String.valueOf(session.getAttribute("displayName"))));
     }
 }

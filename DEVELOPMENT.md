@@ -46,7 +46,7 @@
                           └────────────────────────────────────────────────┘
 ```
 
-架构一句话概括：**命令走 REST（request/response，状态码明确），事件走 WebSocket（服务端主动推送）**。所有共享状态收拢在 `ChatRoom` 一个对象里，不再像 PR03~PR06 那样散落在 ServletContext 属性中。
+架构一句话概括：**命令走 REST（request/response，状态码明确），事件走 WebSocket（服务端主动推送）**。`ChatRoom` 管理在线用户和连接等运行时状态，`ChatRepository` 将账户及最近 200 条消息保存到 SQLite；重启只恢复账户和历史，不恢复在线状态。
 
 ### 1.2 技术选型与理由
 
@@ -58,6 +58,7 @@
 | 实时通道 | jakarta.websocket（JSR 356） | 课程体系的自然延伸，浏览器原生支持 |
 | 前端构建 | Vite 7 | 秒级冷启动、原生 ESM、代理配置简单 |
 | 前端框架 | Vue 3（Composition API） | 插值默认转义（XSS 防护与 PR01 的经验一致），单文件组件足够覆盖本项目规模 |
+| 持久化 | SQLite JDBC 3.49.1 | 嵌入式数据库，无需单独安装服务；账户与消息跨重启保留 |
 | 测试 | JUnit 6 | 沿用 PR03 以来的课程选择 |
 
 ---
@@ -89,7 +90,7 @@ node -v && npm -v
 ### 3.1 生产模式（单进程，适合演示）
 
 ```bash
-cd Final/frontend
+cd frontend
 npm install          # 首次执行
 npm run build        # 产物输出到 frontend/dist
 
@@ -104,10 +105,10 @@ mvn compile exec:java
 
 ```bash
 # 终端 1：后端（dist 尚不存在时自动进入纯 API 模式）
-cd Final/backend && mvn compile exec:java
+cd backend && mvn compile exec:java
 
 # 终端 2：前端 dev server
-cd Final/frontend && npm run dev
+cd frontend && npm run dev
 # 打开 http://localhost:5173（/api 与 /ws 自动代理到 8080）
 ```
 
@@ -119,6 +120,7 @@ cd Final/frontend && npm run dev
 | --- | --- | --- |
 | `FINAL_PORT` | `8080` | HTTP/WS 监听端口 |
 | `FINAL_STATIC_DIR` | 自动探测 | 静态资源目录；显式指定后跳过探测 |
+| `FINAL_DB_PATH` | `final-chatroom.db` | SQLite 文件路径，相对于后端启动时的工作目录 |
 
 ### 3.4 常用命令速查
 
@@ -140,20 +142,24 @@ cd frontend && npm run build          # 重新构建前端（改了前端代码�
 site.buterr.finalchat
 ├── Main                     # 启动入口 + 全部装配（唯一的"胶水"）
 ├── model
-│   ├── User                 # record(username, loginAt)，登录响应 / 在线名单元素
-│   └── Message              # record(id, type, username, content, createdAt)
-├── store                    # 领域状态层（不依赖 servlet API，可单测）
-│   ├── ChatRoom             # 核心：在线用户 + 历史 + 连接登记 + 广播
+│   ├── Account              # record(username, displayName)，不含密码信息
+│   ├── User                 # record(username, displayName, loginAt)
+│   └── Message              # record(id, type, username, displayName, content, createdAt)
+├── store                    # 领域状态与持久化（不依赖 servlet API，可单测）
+│   ├── ChatRoom             # 在线用户 + 历史 + 连接登记 + 广播
+│   ├── ChatRepository       # SQLite 账户与消息读写
+│   ├── PasswordHasher       # 随机盐 PBKDF2 哈希与密码验证
 │   ├── ChatRoomHolder       # 静态引用，供 WebSocket 端点获取 ChatRoom
-│   └── DuplicateUsernameException
+│   └── Duplicate...Exception # 在线用户名与持久账户的冲突类型
 ├── servlet                  # REST 层（薄：校验 + 调 store + 写 JSON）
-│   ├── LoginServlet         # POST /api/login
+│   ├── RegisterServlet      # POST /api/register
+│   ├── LoginServlet         # POST /api/login（密码认证）
 │   ├── MeServlet            # GET  /api/me
 │   ├── LogoutServlet        # POST /api/logout
 │   ├── UsersServlet         # GET  /api/users
 │   └── MessagesServlet      # GET/POST /api/messages
 ├── filter
-│   └── AuthFilter           # /api/* 登录态守卫（放行 /api/login）
+│   └── AuthFilter           # /api/* 登录态守卫（放行注册与登录）
 ├── listener
 │   └── SessionLifecycleListener  # 会话销毁 → ChatRoom.leave
 ├── chat
@@ -170,9 +176,10 @@ site.buterr.finalchat
 `Main.main()` 的执行顺序就是理解本项目的地图：
 
 ```java
-// 1. 创建核心状态对象，并通过构造器注入各组件
-ChatRoom chatRoom = new ChatRoom(ChatRoom.MAX_HISTORY);
-ChatRoomHolder.set(chatRoom);              // WebSocket 端点拿不到 ServletContext，走静态引用
+// 1. 创建共享持久层与运行时状态，启动时恢复最近消息
+ChatRepository repository = new ChatRepository(resolveDatabasePath());
+ChatRoom chatRoom = new ChatRoom(ChatRoom.MAX_HISTORY, repository);
+ChatRoomHolder.set(chatRoom);              // WebSocket 端点经静态引用获取状态
 
 // 2. 起内嵌 Tomcat
 Tomcat tomcat = new Tomcat();
@@ -207,7 +214,8 @@ ctx.addFilterDef(authDef);
 // FilterMap 把 authFilter 挂到 /api/*
 
 // 8. Servlet：实例注册 + 构造器注入 ChatRoom
-Tomcat.addServlet(ctx, "loginServlet", new LoginServlet(chatRoom)).addMapping("/api/login");
+Tomcat.addServlet(ctx, "registerServlet", new RegisterServlet(repository)).addMapping("/api/register");
+Tomcat.addServlet(ctx, "loginServlet", new LoginServlet(chatRoom, repository)).addMapping("/api/login");
 // ... 其余四个
 
 // 9. 启动并阻塞主线程
@@ -226,9 +234,10 @@ tomcat.getServer().await();
     │                          │                                       │
     │ POST /api/login          │                                       │
     │─────────────────────────▶│ AuthFilter 放行 /api/login            │
-    │                          │ ChatRoom.login("alice")               │
+    │                          │ repository.authenticate(alice,密码)    │
+    │                          │ ChatRoom.login(account)                │
     │                          │   查重 → 放入 onlineUsers              │
-    │                          │   publishSystem("alice 加入了聊天室")   │
+    │                          │   持久化并广播加入消息 + online         │
     │                          │   → 广播 message + online             │
     │◀── 200 {username,...} ───│                    ────────────────────▶│ (B 已连接时)
     │ Set-Cookie: JSESSIONID   │                                       │
@@ -240,7 +249,7 @@ tomcat.getServer().await();
     │◀── {type:"online"} ──────│   （对齐一次在线名单）                  │
     │                          │                                       │
     │ POST /api/messages ──────▶│ sendChat("alice","你好")              │
-    │                          │   敏感词过滤 → 入历史 → 广播           │
+    │                          │   敏感词过滤 → SQLite 保存 → 广播       │
     │                          │   broadcaster 入队 → 串行发送          │
     │◀── 201 {message} ────────│                                       │
     │◀── {type:"message"} ─────────────────────────────────────────────▶│
@@ -361,12 +370,13 @@ public void sessionDestroyed(HttpSessionEvent se) {
 
 ## 5. REST API 规范
 
-所有接口同源（生产模式与后端同端口；开发模式经 Vite 代理）。除 `/api/login` 外都需要有效会话，否则 401。
+所有接口同源（生产模式与后端同端口；开发模式经 Vite 代理）。除 `/api/register` 与 `/api/login` 外都需要有效会话，否则 401。
 
 | 方法 | 路径 | 请求体 | 成功响应 | 失败 |
 | --- | --- | --- | --- | --- |
-| POST | `/api/login` | `{"username":"alice"}` | `200` `{"username":"alice","loginAt":...}` + Set-Cookie | `400` 空/长度不符；`409` 重名（忽略大小写） |
-| GET | `/api/me` | — | `200` `{"username":"alice"}` | `401` |
+| POST | `/api/register` | `{"username":"alice","displayName":"小明","password":"..."}` | `201` 账户资料（不含密码信息） | `400` 校验失败；`409` 用户名已存在 |
+| POST | `/api/login` | `{"username":"alice","password":"..."}` | `200` `{"username":"alice","displayName":"小明","loginAt":...}` + Set-Cookie | `400` 缺少字段；`401` 凭据错误；`409` 已在线 |
+| GET | `/api/me` | — | `200` `{"username":"alice","displayName":"小明"}` | `401` |
 | POST | `/api/logout` | — | `200` `{"ok":true}`（并触发离场广播） | — |
 | GET | `/api/users` | — | `200` `{"count":2,"users":[User...]}`（按登录时间排序） | `401` |
 | GET | `/api/messages?after={id}` | — | `200` `{"messages":[Message...]}`；`after>0` 时只返回 id 更大的增量 | `401` |
@@ -375,14 +385,15 @@ public void sessionDestroyed(HttpSessionEvent se) {
 Message 的 JSON 形态：
 
 ```json
-{"id":3, "type":"chat", "username":"alice", "content":"你好", "createdAt":1792810797079}
-{"id":1, "type":"system", "username":null, "content":"alice 加入了聊天室", "createdAt":...}
+{"id":3, "type":"chat", "username":"alice", "displayName":"小明", "content":"你好", "createdAt":1792810797079}
+{"id":1, "type":"system", "username":null, "displayName":null, "content":"小明 加入了聊天室", "createdAt":...}
 ```
 
 curl 冒烟示例（`-c/-b` 维持会话）：
 
 ```bash
-curl -s -c a.jar -H 'Content-Type: application/json' -d '{"username":"alice"}' localhost:8080/api/login
+curl -s -H 'Content-Type: application/json' -d '{"username":"alice","displayName":"小明","password":"correct-horse-123"}' localhost:8080/api/register
+curl -s -c a.jar -H 'Content-Type: application/json' -d '{"username":"alice","password":"correct-horse-123"}' localhost:8080/api/login
 curl -s -b a.jar -H 'Content-Type: application/json' -d '{"content":"你好"}' localhost:8080/api/messages
 curl -s -b a.jar 'localhost:8080/api/messages?after=0'
 ```
@@ -442,17 +453,18 @@ server: {
 
 ```
 App.vue
-│  me = null | {username}        onMounted: GET /api/me 恢复会话
-│  handleLogin(name): POST /api/login，失败 throw Error(data.error)
+│  me = null | {username,displayName}  onMounted: GET /api/me 恢复会话
+│  handleRegister(...): POST /api/register，成功由登录页切回登录
+│  handleLogin(name,password): POST /api/login，失败 throw Error(data.error)
 │  handleLogout():    me = null
 │
-├── <LoginView :login="handleLogin" />          v-if="!me"
+├── <LoginView :login="handleLogin" :register="handleRegister" />  v-if="!me"
 │     内部只管输入校验与 loading，登录失败把 e.message 显示在卡片上
 └── <ChatView :me="me" @logout="handleLogout" />  v-else
       内部状态：messages / users / onlineCount / connected / draft / sendError
 ```
 
-渲染规则：`m.type === 'system'` 渲染居中灰 pill；否则按 `username === me.username` 分左右气泡。**所有插值都是 `{{ }}` 默认转义**，消息内容不做 `v-html`——这是对 PR01"输出端转义"结论的直接沿用。
+渲染规则：`m.type === 'system'` 渲染居中灰 pill；否则按稳定 `username === me.username` 分左右气泡，以 `displayName` 展示发送者。**所有插值都是 `{{ }}` 默认转义**，消息内容不做 `v-html`——这是对 PR01"输出端转义"结论的直接沿用。
 
 ### 7.4 WebSocket 客户端生命周期（ChatView.vue）
 
@@ -489,10 +501,10 @@ ws.onclose = (event) => {
 ### 8.1 单元测试（后端核心逻辑）
 
 ```bash
-mvn test        # ChatRoomTest：6 个用例
+mvn test        # ChatRoomTest 6 个用例 + ChatRepositoryTest 2 个用例
 ```
 
-覆盖：登录产生系统消息、重名拒绝（含大小写变体）、敏感词替换、历史上限裁剪、离场清理、`historyAfter` 增量语义。`ChatRoom` 不依赖 servlet 容器（WS Session 相关方法在测试中自然为空转），所以能直接 new 出来测。
+覆盖：登录产生系统消息、重名拒绝（含大小写变体）、敏感词替换、历史上限裁剪、离场清理、`historyAfter` 增量语义；SQLite 测试还覆盖账户跨重开认证、大小写唯一、错误密码拒绝、消息恢复及持久历史上限。`ChatRoom` 不依赖 servlet 容器（WS Session 相关方法在测试中自然为空转），所以能直接 new 出来测。
 
 ### 8.2 REST 冒烟（curl，见第 5 节示例）
 

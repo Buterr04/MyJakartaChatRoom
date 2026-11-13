@@ -22,7 +22,9 @@
 
 ## 功能
 
-- 用户名登录（2~20 字符，重名拒绝、忽略大小写），HttpSession 保持登录态，刷新页面自动恢复
+- 用户注册与密码登录：用户名忽略大小写唯一，显示名称用于聊天展示，密码使用随机盐 PBKDF2 哈希保存
+- SQLite 持久化账户与最近 200 条聊天/系统消息，重启后恢复历史；在线用户和 WebSocket 连接不跨重启恢复
+- HttpSession 保持登录态，刷新页面自动恢复；同一账户不能重复在线
 - 实时聊天：发消息走 REST（拿到明确的 201/400/401 状态码），新消息经 WebSocket 广播给所有在线用户
 - 系统消息：成员加入 / 离开实时广播
 - 在线名单侧栏：人数与列表随登录 / 登出 / 会话超时实时更新
@@ -38,7 +40,7 @@
 
 ```bash
 # 1. 构建前端
-cd Final/frontend
+cd frontend
 npm install
 npm run build          # 产物输出到 frontend/dist
 
@@ -53,38 +55,40 @@ mvn compile exec:java
 
 ```bash
 # 终端 1：后端（此时 dist 不存在，自动进入纯 API 模式）
-cd Final/backend && mvn compile exec:java
+cd backend && mvn compile exec:java
 
 # 终端 2：前端 dev server，/api 与 /ws 自动代理到 8080
-cd Final/frontend && npm install && npm run dev
+cd frontend && npm install && npm run dev
 
 # 打开 http://localhost:5173
 ```
 
-可选环境变量：`FINAL_PORT`（默认 8080）、`FINAL_STATIC_DIR`（静态目录，默认自动探测 `../frontend/dist` → `frontend/dist` → 纯 API 模式）。
+可选环境变量：`FINAL_PORT`（默认 8080）、`FINAL_STATIC_DIR`（静态目录，默认自动探测 `../frontend/dist` → `frontend/dist` → 纯 API 模式）、`FINAL_DB_PATH`（默认 `final-chatroom.db`，相对于后端启动时的工作目录）。
 
 ## 目录结构
 
 ```
 Final/
 ├── backend/                          # Java 后端（Maven, Java 21）
-│   ├── pom.xml                       # 内嵌 Tomcat 10.1 + WebSocket + Jackson + JUnit
+│   ├── pom.xml                       # 内嵌 Tomcat 10.1 + WebSocket + Jackson + SQLite + JUnit
 │   └── src/main/java/site/buterr/finalchat/
 │       ├── Main.java                 # 启动入口：装配 Tomcat / Servlet / Filter / Listener / WS
-│       ├── servlet/                  # REST API（Login / Me / Logout / Users / Messages）
+│       ├── servlet/                  # REST API（Register / Login / Me / Logout / Users / Messages）
 │       ├── filter/AuthFilter.java    # 登录态过滤器（对应 PR04）
 │       ├── listener/                 # 会话销毁 → 用户离场（对应 PR04~06 的 SessionLifecycleListener）
 │       ├── chat/                     # WebSocket 端点 /ws/chat + 握手配置器
-│       ├── model/                    # User / Message（不可变 record）
-│       ├── store/ChatRoom.java       # 核心状态：在线用户 + 消息历史 + WS 连接登记 + 广播
+│       ├── model/                    # Account / User / Message（不可变 record）
+│       ├── store/ChatRoom.java       # 运行时状态：在线用户 + 消息历史 + WS 连接登记 + 广播
+│       ├── store/ChatRepository.java # SQLite 账户与消息持久化
+│       ├── store/PasswordHasher.java # 随机盐 PBKDF2 密码哈希
 │       └── util/JsonUtil.java        # JSON 读写封装
-│   └── src/test/...                  # ChatRoom 单元测试
+│   └── src/test/...                  # ChatRoom 与 SQLite 持久化单元测试
 └── frontend/                         # Vite + Vue 3 前端
     ├── vite.config.js                # /api、/ws 开发代理
     └── src/
-        ├── App.vue                   # 会话恢复 + 登录/聊天视图切换
+        ├── App.vue                   # 会话恢复 + 注册/登录/聊天视图切换
         └── components/
-            ├── LoginView.vue         # 登录卡片
+            ├── LoginView.vue         # 登录/注册卡片
             └── ChatView.vue          # 聊天主界面 + WebSocket 客户端（重连/去重/自动滚动）
 ```
 
@@ -92,7 +96,8 @@ Final/
 
 | 方法 | 路径 | 说明 | 成功 | 失败 |
 | --- | --- | --- | --- | --- |
-| POST | `/api/login` | 登录，`{"username":"..."}` | 200 + 用户信息 | 400 校验失败 / 409 重名 |
+| POST | `/api/register` | 注册，`{"username":"...","displayName":"...","password":"..."}` | 201 + 账户资料 | 400 校验失败 / 409 用户名已存在 |
+| POST | `/api/login` | 登录，`{"username":"...","password":"..."}` | 200 + 用户信息 | 400 校验失败 / 401 凭据错误 / 409 已在线 |
 | GET | `/api/me` | 当前登录用户（恢复会话用） | 200 | 401 |
 | POST | `/api/logout` | 登出（销毁会话，触发离场广播） | 200 | — |
 | GET | `/api/users` | 在线用户列表 | 200 | 401 |
@@ -107,9 +112,9 @@ Final/
 
 ```jsonc
 // 新消息（chat=用户发言，system=系统提示）
-{"type":"message","data":{"id":3,"type":"chat","username":"alice","content":"你好","createdAt":1792810797079}}
+{"type":"message","data":{"id":3,"type":"chat","username":"alice","displayName":"小明","content":"你好","createdAt":1792810797079}}
 // 在线名单（登录/登出/超时时推送）
-{"type":"online","data":{"count":2,"users":[{"username":"alice","loginAt":...}]}}
+{"type":"online","data":{"count":2,"users":[{"username":"alice","displayName":"小明","loginAt":...}]}}
 ```
 
 客户端 → 服务端：`"ping"`，服务端回 `"pong"`（保活探测）。
@@ -131,19 +136,9 @@ Final/
 
 **新增技能**：WebSocket 实时推送、Vite/Vue 3 前后端分离开发、内嵌 Tomcat 装配、Java record + Jackson。
 
-## 实现笔记（踩坑记录）
-
-把 WAR 部署模式改为内嵌 Tomcat 后，有几处与"外部 Tomcat + conf/web.xml"默认行为不同的地方，都已在 `Main.java` 里处理：
-
-1. **DefaultServlet**：`Tomcat.addContext()` 不会注册默认 Servlet，静态资源和 WebSocket 升级请求（依赖映射到 servlet 后过滤器才能拦截）都会 404，必须显式注册并映射 `/`；
-2. **MIME 映射**：没有 conf/web.xml 就没有 `.js → application/javascript` 映射，浏览器会拒绝把无类型的响应当作 ES module 执行；
-3. **监听器注册**：`HttpSessionListener` 的事件从 lifecycle 列表分发，按类名注册（等价 web.xml 的 `<listener>`）并补上无参构造最可靠；
-4. **类加载器**：webapp 类加载器默认不含应用类路径，需把父加载器指向应用类加载器；
-5. **WebSocket 并发写**：Tomcat 的异步 Remote 不允许同一连接上重叠写入（`TEXT_FULL_WRITING`），广播必须按连接排队、用 SendHandler 回调链串行发送（见 `ChatRoom` 的出站队列）。
-
 ## 测试
 
 ```bash
-cd Final/backend
-mvn test        # ChatRoom 单元测试：登录查重、敏感词、历史上限、离场、增量拉取
+cd backend
+mvn test        # 8 项：聊天室规则、账户认证、消息持久化与历史上限
 ```

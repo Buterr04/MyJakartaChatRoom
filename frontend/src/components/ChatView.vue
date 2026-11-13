@@ -158,7 +158,7 @@ function isOwn(message) {
         <span class="conn" :class="connected ? 'on' : 'off'">
           {{ connected ? '已连接' : '连接中…' }}
         </span>
-        <span class="me-chip">{{ me.username }}</span>
+        <span class="me-chip">{{ me.displayName }}</span>
         <button class="btn-ghost" @click="logout">退出</button>
       </div>
     </header>
@@ -175,10 +175,10 @@ function isOwn(message) {
         <ul>
           <li v-for="u in users" :key="u.username">
             <span class="avatar" :class="{ self: u.username === me.username }">
-              {{ u.username.slice(0, 1).toUpperCase() }}
+              {{ u.displayName.slice(0, 1).toUpperCase() }}
             </span>
             <span class="name">
-              {{ u.username }}<i v-if="u.username === me.username">（我）</i>
+              {{ u.displayName }}<i v-if="u.username === me.username">（我）</i>
             </span>
           </li>
         </ul>
@@ -192,7 +192,7 @@ function isOwn(message) {
             </div>
             <div v-else class="msg" :class="isOwn(m) ? 'own' : 'other'">
               <div class="meta">
-                <span class="who">{{ m.username }}</span>
+                <span class="who">{{ m.displayName }}</span>
                 <span class="time">{{ formatTime(m.createdAt) }}</span>
               </div>
               <div class="bubble">{{ m.content }}</div>

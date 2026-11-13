@@ -36,6 +36,12 @@
             <artifactId>jackson-databind</artifactId>
             <version>2.18.2</version>
         </dependency>
+        <!-- 嵌入式 SQLite：账户与聊天室状态持久化 -->
+        <dependency>
+            <groupId>org.xerial</groupId>
+            <artifactId>sqlite-jdbc</artifactId>
+            <version>3.49.1.0</version>
+        </dependency>
         <!-- 单元测试，沿用 PR03 以来课程使用的 JUnit -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
