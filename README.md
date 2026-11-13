@@ -1,6 +1,6 @@
 <div align="center"> 
 <h1>MyJakartaChatRoom</h1>
-<p>Jakarta EE 课程的收官项目：Java 后端 + Vite 前端的现代实时聊天室</p>
+<p>Java 后端 + Vite 前端的实时聊天室</p>
 <p>
   <img src="https://img.shields.io/github/stars/Buterr04/MyJakartaChatRoom.svg?style=social">
   <img src="https://img.shields.io/github/issues/Buterr04/MyJakartaChatRoom.svg">
@@ -15,7 +15,7 @@
 
 > 📖 详细开发手册（架构解析 / 运行调试 / 协议规范 / 测试方法 / 踩坑实录 / 二次开发指南）见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
-前六个 PR（PR00~PR06）从 Servlet 一路学到 JSP/JSTL，全部是"服务端渲染 + 表单提交 + 外部 Tomcat"的传统形态。Final 在保留课程编程模型（纯 `jakarta.servlet` / `jakarta.websocket`，servlet、filter、listener 一个不少）的前提下，升级为**前后端分离架构**：
+项目采用**前后端分离架构**，后端仍是纯 `jakarta.servlet` / `jakarta.websocket` 编程模型（servlet、filter、listener 一个不少）：
 
 - 后端：内嵌 Tomcat 10.1 + REST API + WebSocket 实时推送，`mvn compile exec:java` 一条命令启动，不再依赖外部安装的 Tomcat；
 - 前端：Vite + Vue 3 单页应用，开发时走 Vite dev server（API/WS 自动代理），生产构建后直接由同一个 Tomcat 服务。
@@ -63,15 +63,15 @@ cd frontend && npm install && npm run dev
 # 打开 http://localhost:5173
 ```
 
-可选环境变量：`FINAL_PORT`（默认 8080）、`FINAL_STATIC_DIR`（静态目录，默认自动探测 `../frontend/dist` → `frontend/dist` → 纯 API 模式）、`FINAL_DB_PATH`（默认 `final-chatroom.db`，相对于后端启动时的工作目录）。
+可选环境变量：`APP_PORT`（默认 8080）、`APP_STATIC_DIR`（静态目录，默认自动探测 `../frontend/dist` → `frontend/dist` → 纯 API 模式）、`APP_DB_PATH`（默认 `chatroom.db`，相对于后端启动时的工作目录）。
 
 ## 目录结构
 
 ```
-Final/
+MyJakartaChatRoom/
 ├── backend/                          # Java 后端（Maven, Java 21）
 │   ├── pom.xml                       # 内嵌 Tomcat 10.1 + WebSocket + Jackson + SQLite + JUnit
-│   └── src/main/java/site/buterr/finalchat/
+│   └── src/main/java/site/buterr/chatroom/
 │       ├── Main.java                 # 启动入口：装配 Tomcat / Servlet / Filter / Listener / WS
 │       ├── servlet/                  # REST API（Register / Login / Me / Logout / Users / Messages）
 │       ├── filter/AuthFilter.java    # 登录态过滤器（对应 PR04）
@@ -121,7 +121,7 @@ Final/
 
 ## 与 PR00~PR06 的知识对照
 
-| 课程知识点 | 在 Final 中的位置 |
+| 课程知识点 | 在项目中的位置 |
 | --- | --- |
 | PR00 Servlet 基础 | 全部 REST Servlet |
 | PR01 线程安全集合 / HTML 转义 | `ChatRoom` 的并发容器；消息由 Vue 插值转义输出 |

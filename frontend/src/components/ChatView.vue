@@ -153,7 +153,7 @@ function isOwn(message) {
 <template>
   <div class="chat-page">
     <header class="chat-header">
-      <div class="brand"><span class="logo">💬</span>Final 聊天室</div>
+      <div class="brand"><span class="logo">💬</span>聊天室</div>
       <div class="header-right">
         <span class="conn" :class="connected ? 'on' : 'off'">
           {{ connected ? '已连接' : '连接中…' }}

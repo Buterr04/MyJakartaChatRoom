@@ -1,4 +1,4 @@
-# Final 聊天室 · 开发手册
+# MyJakartaChatRoom · 开发手册
 
 > 本手册面向要运行、理解、修改或扩展本项目的开发者。项目定位与功能速览见 [README.md](./README.md)，本手册聚焦"怎么跑起来、代码怎么组织、为什么这样写、如何继续开发"。
 
@@ -96,7 +96,7 @@ npm run build        # 产物输出到 frontend/dist
 
 cd ../backend
 mvn compile exec:java
-# 控制台出现 "Final 聊天室已启动: http://localhost:8080" 即成功
+# 控制台出现 "聊天室已启动: http://localhost:8080" 即成功
 ```
 
 启动时 `Main.resolveStaticDir()` 会自动探测 `../frontend/dist`（从 backend 目录启动）或 `frontend/dist`（从仓库根目录启动）作为静态资源目录。打开 <http://localhost:8080> 即可。
@@ -118,9 +118,9 @@ cd frontend && npm run dev
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `FINAL_PORT` | `8080` | HTTP/WS 监听端口 |
-| `FINAL_STATIC_DIR` | 自动探测 | 静态资源目录；显式指定后跳过探测 |
-| `FINAL_DB_PATH` | `final-chatroom.db` | SQLite 文件路径，相对于后端启动时的工作目录 |
+| `APP_PORT` | `8080` | HTTP/WS 监听端口 |
+| `APP_STATIC_DIR` | 自动探测 | 静态资源目录；显式指定后跳过探测 |
+| `APP_DB_PATH` | `chatroom.db` | SQLite 文件路径，相对于后端启动时的工作目录 |
 
 ### 3.4 常用命令速查
 
@@ -139,7 +139,7 @@ cd frontend && npm run build          # 重新构建前端（改了前端代码�
 ### 4.1 包结构与职责
 
 ```
-site.buterr.finalchat
+site.buterr.chatroom
 ├── Main                     # 启动入口 + 全部装配（唯一的"胶水"）
 ├── model
 │   ├── Account              # record(username, displayName)，不含密码信息
@@ -609,8 +609,8 @@ Tomcat.addServlet(ctx, "searchServlet", new SearchServlet(chatRoom)).addMapping(
 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
-| `Port 8080 was already in use` | 旧进程未退 | `lsof -ti:8080 \| xargs kill`，或 `FINAL_PORT=9090 mvn compile exec:java` |
-| 打开首页 404 | dist 不存在（纯 API 模式） | 先 `npm run build`，或 `FINAL_STATIC_DIR` 指向构建产物 |
+| `Port 8080 was already in use` | 旧进程未退 | `lsof -ti:8080 \| xargs kill`，或 `APP_PORT=9090 mvn compile exec:java` |
+| 打开首页 404 | dist 不存在（纯 API 模式） | 先 `npm run build`，或 `APP_STATIC_DIR` 指向构建产物 |
 | 页面白屏、JS 不执行 | 自定义静态目录缺 MIME 映射 | 参考第 9 节坑 ②，在 Main 补 `addMimeMapping` |
 | 一直显示"连接中…" | 后端没启动 / 开发模式没走 5173 | 确认后端日志与访问端口；WS 依赖 `/ws` 代理 |
 | 登录报 409「已经在线了」 | 同名会话未过期 | 用别的用户名，或等会话超时（60 分钟）/ 重启后端；测试脚本务必 `POST /api/logout` 清理 |
@@ -623,7 +623,7 @@ Tomcat.addServlet(ctx, "searchServlet", new SearchServlet(chatRoom)).addMapping(
 
 | 参数 | 值 | 定义处 |
 | --- | --- | --- |
-| HTTP/WS 端口 | 8080（`FINAL_PORT` 可改） | `Main` |
+| HTTP/WS 端口 | 8080（`APP_PORT` 可改） | `Main` |
 | 会话超时 | 60 分钟 | `Main`（`setSessionTimeout`） |
 | 消息历史上限 | 200 条 | `ChatRoom.MAX_HISTORY` |
 | 单条消息长度 | ≤ 500 字符 | `MessagesServlet.MAX_CONTENT_LENGTH` |

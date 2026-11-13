@@ -5,11 +5,11 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>site.buterr</groupId>
-    <artifactId>Final-ChatRoom</artifactId>
+    <artifactId>chatroom</artifactId>
     <version>1.0-SNAPSHOT</version>
     <packaging>jar</packaging>
-    <name>Final-ChatRoom</name>
-    <description>Jakarta EE 课程收官项目：Java 后端 + Vite 前端的实时聊天室</description>
+    <name>chatroom</name>
+    <description>Java 后端 + Vite 前端的实时聊天室</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -52,7 +52,7 @@
     </dependencies>
 
     <build>
-        <finalName>final-chatroom</finalName>
+        <finalName>chatroom</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -73,7 +73,7 @@
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.5.0</version>
                 <configuration>
-                    <mainClass>site.buterr.finalchat.Main</mainClass>
+                    <mainClass>site.buterr.chatroom.Main</mainClass>
                 </configuration>
             </plugin>
         </plugins>

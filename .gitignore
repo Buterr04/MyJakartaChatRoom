@@ -32,4 +32,4 @@ replay_pid*
 # maven wrapper files
 
 # Local chat database and SQLite sidecar files
-final-chatroom.db*
+chatroom.db*

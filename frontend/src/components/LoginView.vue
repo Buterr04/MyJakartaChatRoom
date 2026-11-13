@@ -70,8 +70,7 @@ async function submit() {
   <div class="login-page">
     <form class="login-card" @submit.prevent="submit">
       <div class="login-logo">💬</div>
-      <h1>Final 聊天室</h1>
-      <p class="sub">Jakarta EE 课程收官之作 · 实时聊天</p>
+      <h1>聊天室</h1>
 
       <div class="auth-tabs" role="tablist" aria-label="账户操作">
         <button type="button" :class="{ active: mode === 'login' }" @click="switchMode('login')">登录</button>
