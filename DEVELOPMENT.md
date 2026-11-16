@@ -142,13 +142,15 @@ cd frontend && npm run build          # 重新构建前端（改了前端代码�
 site.buterr.chatroom
 ├── Main                     # 启动入口 + 全部装配（唯一的"胶水"）
 ├── model
-│   ├── Account              # record(username, displayName)，不含密码信息
-│   ├── User                 # record(username, displayName, loginAt)
+│   ├── Role                 # USER / ADMIN
+│   ├── Account              # 账户公开资料 + 角色 + 禁言截止时间，不含密码信息
+│   ├── User                 # 在线账户资料 + loginAt
 │   └── Message              # record(id, type, username, displayName, content, createdAt)
 ├── store                    # 领域状态与持久化（不依赖 servlet API，可单测）
 │   ├── ChatRoom             # 在线用户 + 历史 + 连接登记 + 广播
 │   ├── ChatRepository       # SQLite 账户与消息读写
 │   ├── PasswordHasher       # 随机盐 PBKDF2 哈希与密码验证
+│   ├── AccountMutedException # 禁言账户尝试发言时抛出
 │   ├── ChatRoomHolder       # 静态引用，供 WebSocket 端点获取 ChatRoom
 │   └── Duplicate...Exception # 在线用户名与持久账户的冲突类型
 ├── servlet                  # REST 层（薄：校验 + 调 store + 写 JSON）
@@ -157,9 +159,12 @@ site.buterr.chatroom
 │   ├── MeServlet            # GET  /api/me
 │   ├── LogoutServlet        # POST /api/logout
 │   ├── UsersServlet         # GET  /api/users
-│   └── MessagesServlet      # GET/POST /api/messages
+│   ├── MessagesServlet      # GET/POST /api/messages
+│   ├── AdminMessagesServlet # DELETE /api/admin/messages/{id}
+│   └── AdminUsersServlet    # POST /api/admin/users/{username}/mute
 ├── filter
-│   └── AuthFilter           # /api/* 登录态守卫（放行注册与登录）
+│   ├── AuthFilter           # /api/* 登录态守卫（放行注册与登录）
+│   └── AdminFilter          # /api/admin/* 管理员守卫，越权返回 403
 ├── listener
 │   └── SessionLifecycleListener  # 会话销毁 → ChatRoom.leave
 ├── chat
@@ -212,6 +217,7 @@ authDef.setFilterName("authFilter");
 authDef.setFilter(new AuthFilter());
 ctx.addFilterDef(authDef);
 // FilterMap 把 authFilter 挂到 /api/*
+// adminFilter 再挂到 /api/admin/*，已登录但不是 ADMIN 时返回 403
 
 // 8. Servlet：实例注册 + 构造器注入 ChatRoom
 Tomcat.addServlet(ctx, "registerServlet", new RegisterServlet(repository)).addMapping("/api/register");
@@ -370,17 +376,21 @@ public void sessionDestroyed(HttpSessionEvent se) {
 
 ## 5. REST API 规范
 
-所有接口同源（生产模式与后端同端口；开发模式经 Vite 代理）。除 `/api/register` 与 `/api/login` 外都需要有效会话，否则 401。
+所有接口同源（生产模式与后端同端口；开发模式经 Vite 代理）。除 `/api/register` 与 `/api/login` 外都需要有效会话，否则 401；`/api/admin/*` 还要求 `ADMIN` 角色，否则 403。
+
+首个注册账号自动成为 `ADMIN`，之后注册的账号为 `USER`。旧版数据库启动时通过 `PRAGMA table_info` 检测并补充 `role`、`muted_until` 列；如果旧库没有管理员，最早注册的账号自动补任，已有账户与消息不会删除。
 
 | 方法 | 路径 | 请求体 | 成功响应 | 失败 |
 | --- | --- | --- | --- | --- |
 | POST | `/api/register` | `{"username":"alice","displayName":"小明","password":"..."}` | `201` 账户资料（不含密码信息） | `400` 校验失败；`409` 用户名已存在 |
-| POST | `/api/login` | `{"username":"alice","password":"..."}` | `200` `{"username":"alice","displayName":"小明","loginAt":...}` + Set-Cookie | `400` 缺少字段；`401` 凭据错误；`409` 已在线 |
-| GET | `/api/me` | — | `200` `{"username":"alice","displayName":"小明"}` | `401` |
+| POST | `/api/login` | `{"username":"alice","password":"..."}` | `200` 在线用户资料（含 `role`、`mutedUntil`） + Set-Cookie | `400` 缺少字段；`401` 凭据错误；`409` 已在线 |
+| GET | `/api/me` | — | `200` 最新账户公开资料（含角色与禁言状态） | `401` |
 | POST | `/api/logout` | — | `200` `{"ok":true}`（并触发离场广播） | — |
 | GET | `/api/users` | — | `200` `{"count":2,"users":[User...]}`（按登录时间排序） | `401` |
 | GET | `/api/messages?after={id}` | — | `200` `{"messages":[Message...]}`；`after>0` 时只返回 id 更大的增量 | `401` |
-| POST | `/api/messages` | `{"content":"..."}` | `201` `{"message":Message}` | `400` 空/超 500 字符；`401` |
+| POST | `/api/messages` | `{"content":"..."}` | `201` `{"message":Message}` | `400` 空/超 500 字符；`401`；`403` 禁言 |
+| DELETE | `/api/admin/messages/{id}` | — | `200` `{"deletedId":3}` | `401`；`403` 非管理员；`404` 消息不存在或为系统消息 |
+| POST | `/api/admin/users/{username}/mute` | `{"minutes":10}`，0~10080，0 表示解禁 | `200` `{"account":Account}` | `400` 参数错误；`401`；`403`；`404` 账户不存在 |
 
 Message 的 JSON 形态：
 
@@ -401,11 +411,13 @@ curl -s -b a.jar 'localhost:8080/api/messages?after=0'
 ## 6. WebSocket 协议规范
 
 - 端点：`ws(s)://<host>/ws/chat`；握手自动携带 Cookie，未登录握手会被立即以关闭码 **1008** 关闭；
-- 服务端 → 客户端（两种包）：
+- 服务端 → 客户端（四种包）：
 
 ```jsonc
 {"type":"message","data":{ ...Message... }}                                    // 新消息（chat/system）
 {"type":"online","data":{"count":2,"users":[{"username":"alice","loginAt":...}]}}  // 名单变化
+{"type":"messageDeleted","data":{"id":3}}                                         // 删除聊天消息
+{"type":"accountUpdated","data":{"username":"alice","role":"USER","mutedUntil":0}} // 禁言/解禁
 ```
 
 - 客户端 → 服务端：文本 `"ping"` → 服务端回 `"pong"`（保活探测用）；
@@ -453,18 +465,20 @@ server: {
 
 ```
 App.vue
-│  me = null | {username,displayName}  onMounted: GET /api/me 恢复会话
+│  me = null | {username,displayName,role,mutedUntil}  onMounted: GET /api/me 恢复会话
 │  handleRegister(...): POST /api/register，成功由登录页切回登录
 │  handleLogin(name,password): POST /api/login，失败 throw Error(data.error)
 │  handleLogout():    me = null
 │
 ├── <LoginView :login="handleLogin" :register="handleRegister" />  v-if="!me"
 │     内部只管输入校验与 loading，登录失败把 e.message 显示在卡片上
-└── <ChatView :me="me" @logout="handleLogout" />  v-else
+└── <ChatView :me="me" @logout="handleLogout" @account-updated="handleAccountUpdated" />  v-else
       内部状态：messages / users / onlineCount / connected / draft / sendError
 ```
 
 渲染规则：`m.type === 'system'` 渲染居中灰 pill；否则按稳定 `username === me.username` 分左右气泡，以 `displayName` 展示发送者。**所有插值都是 `{{ }}` 默认转义**，消息内容不做 `v-html`——这是对 PR01"输出端转义"结论的直接沿用。
+
+管理员在消息上看到删除按钮，在其他在线用户旁看到禁言/解禁按钮。按钮可见性只负责界面展示，真正的权限校验由 `AdminFilter` 完成。`messageDeleted` 会从所有客户端移除消息；`accountUpdated` 会同步在线名单和当前用户的禁言状态，解禁或到期后输入框恢复可用。
 
 ### 7.4 WebSocket 客户端生命周期（ChatView.vue）
 
@@ -501,10 +515,10 @@ ws.onclose = (event) => {
 ### 8.1 单元测试（后端核心逻辑）
 
 ```bash
-mvn test        # ChatRoomTest 6 个用例 + ChatRepositoryTest 2 个用例
+mvn test        # ChatRoomTest 8 个用例 + ChatRepositoryTest 5 个用例
 ```
 
-覆盖：登录产生系统消息、重名拒绝（含大小写变体）、敏感词替换、历史上限裁剪、离场清理、`historyAfter` 增量语义；SQLite 测试还覆盖账户跨重开认证、大小写唯一、错误密码拒绝、消息恢复及持久历史上限。`ChatRoom` 不依赖 servlet 容器（WS Session 相关方法在测试中自然为空转），所以能直接 new 出来测。
+覆盖：登录产生系统消息、重名拒绝（含大小写变体）、敏感词替换、历史上限裁剪、离场清理、`historyAfter` 增量语义、禁言/解禁及消息删除；SQLite 测试还覆盖账户跨重开认证、角色初始化、禁言持久化、旧库无损迁移、消息恢复及持久历史上限。`ChatRoom` 不依赖 servlet 容器（WS Session 相关方法在测试中自然为空转），所以能直接 new 出来测。
 
 ### 8.2 REST 冒烟（curl，见第 5 节示例）
 

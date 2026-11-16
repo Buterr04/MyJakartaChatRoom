@@ -10,7 +10,9 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import site.buterr.chatroom.model.Account;
 import site.buterr.chatroom.model.Message;
+import site.buterr.chatroom.model.Role;
 import site.buterr.chatroom.model.User;
 
 class ChatRoomTest {
@@ -92,5 +94,36 @@ class ChatRoomTest {
 
         assertEquals(1, increment.size());
         assertEquals("第二条", increment.get(0).content());
+    }
+
+    @Test
+    @DisplayName("禁言账户可以阅读和解除禁言后继续发言")
+    void mutedAccountCannotSendUntilUnmuted() {
+        ChatRoom room = new ChatRoom(200);
+        room.login(new Account("alice", "Alice", Role.USER, 0));
+        int historySize = room.historyAfter(0).size();
+        long mutedUntil = System.currentTimeMillis() + 60_000;
+
+        room.setMutedUntil("alice", mutedUntil).orElseThrow();
+        assertEquals(mutedUntil, room.onlineUsers().get(0).mutedUntil());
+        assertThrows(AccountMutedException.class, () -> room.sendChat("alice", "blocked"));
+        assertEquals(historySize, room.historyAfter(0).size());
+
+        room.setMutedUntil("alice", 0).orElseThrow();
+        assertEquals("allowed", room.sendChat("alice", "allowed").content());
+    }
+
+    @Test
+    @DisplayName("管理员删除聊天消息但保留系统消息")
+    void deleteRemovesOnlyChatMessages() {
+        ChatRoom room = new ChatRoom(200);
+        room.login("alice");
+        Message system = room.historyAfter(0).get(0);
+        Message chat = room.sendChat("alice", "delete me");
+
+        assertFalse(room.deleteMessage(system.id()));
+        assertTrue(room.deleteMessage(chat.id()));
+        assertFalse(room.deleteMessage(chat.id()));
+        assertTrue(room.historyAfter(0).stream().noneMatch(message -> message.id() == chat.id()));
     }
 }

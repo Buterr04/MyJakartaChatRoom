@@ -51,6 +51,8 @@ public class LoginServlet extends HttpServlet {
             User user = chatRoom.login(account.get());
             req.getSession(true).setAttribute("username", user.username());
             req.getSession(false).setAttribute("displayName", user.displayName());
+            req.getSession(false).setAttribute("role", user.role().name());
+            req.getSession(false).setAttribute("mutedUntil", user.mutedUntil());
             JsonUtil.write(resp, HttpServletResponse.SC_OK, user);
         } catch (DuplicateUsernameException e) {
             JsonUtil.write(resp, HttpServletResponse.SC_CONFLICT,

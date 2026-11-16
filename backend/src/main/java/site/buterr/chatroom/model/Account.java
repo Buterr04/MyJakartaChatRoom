@@ -3,5 +3,9 @@ package site.buterr.chatroom.model;
 /**
  * 已注册账户中可安全返回给应用层的公开资料。
  */
-public record Account(String username, String displayName) {
+public record Account(String username, String displayName, Role role, long mutedUntil) {
+
+    public Account(String username, String displayName) {
+        this(username, displayName, Role.USER, 0);
+    }
 }

@@ -11,6 +11,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 
 import site.buterr.chatroom.model.Message;
+import site.buterr.chatroom.store.AccountMutedException;
 import site.buterr.chatroom.store.ChatRoom;
 import site.buterr.chatroom.util.JsonUtil;
 
@@ -63,7 +64,12 @@ public class MessagesServlet extends HttpServlet {
 
         HttpSession session = req.getSession(false);
         String username = (String) session.getAttribute("username");
-        Message message = chatRoom.sendChat(username, content);
-        JsonUtil.write(resp, HttpServletResponse.SC_CREATED, Map.of("message", message));
+        try {
+            Message message = chatRoom.sendChat(username, content);
+            JsonUtil.write(resp, HttpServletResponse.SC_CREATED, Map.of("message", message));
+        } catch (AccountMutedException e) {
+            JsonUtil.write(resp, HttpServletResponse.SC_FORBIDDEN,
+                    Map.of("error", "账户当前处于禁言状态", "mutedUntil", e.getMutedUntil()));
+        }
     }
 }

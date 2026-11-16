@@ -237,6 +237,14 @@ input {
   font-weight: 600;
 }
 
+.role-chip {
+  font-size: 12px;
+  color: #8a6d1a;
+  background: #fff7d6;
+  border-radius: 999px;
+  padding: 5px 10px;
+}
+
 .btn-ghost {
   background: transparent;
   border: 1.5px solid var(--line);
@@ -259,6 +267,26 @@ input {
   border: 1px solid #f3dfa0;
   color: #8a6d1a;
   font-size: 13px;
+}
+
+.admin-error,
+.muted-banner {
+  margin-top: 10px;
+  padding: 9px 16px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+}
+
+.admin-error {
+  color: var(--danger);
+  background: #fdeceb;
+  border: 1px solid #f5c2c4;
+}
+
+.muted-banner {
+  color: #8a6d1a;
+  background: #fff7e0;
+  border: 1px solid #f3dfa0;
 }
 
 .chat-body {
@@ -344,6 +372,27 @@ input {
   font-style: normal;
   color: var(--muted);
   font-size: 12px;
+}
+
+.sidebar .name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.user-action,
+.msg-action {
+  padding: 2px 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  border-radius: 5px;
+}
+
+.user-action:hover,
+.msg-action:hover {
+  color: var(--danger);
+  background: #fdeceb;
 }
 
 .chat-main {

@@ -24,6 +24,7 @@
 
 - 用户注册与密码登录：用户名忽略大小写唯一，显示名称用于聊天展示，密码使用随机盐 PBKDF2 哈希保存
 - SQLite 持久化账户与最近 200 条聊天/系统消息，重启后恢复历史；在线用户和 WebSocket 连接不跨重启恢复
+- 角色权限：首个注册账号自动成为管理员，旧数据库升级时由最早账号补任；管理员可删除聊天消息、禁言或解禁用户
 - HttpSession 保持登录态，刷新页面自动恢复；同一账户不能重复在线
 - 实时聊天：发消息走 REST（拿到明确的 201/400/401 状态码），新消息经 WebSocket 广播给所有在线用户
 - 系统消息：成员加入 / 离开实时广播
@@ -74,7 +75,7 @@ MyJakartaChatRoom/
 │   └── src/main/java/site/buterr/chatroom/
 │       ├── Main.java                 # 启动入口：装配 Tomcat / Servlet / Filter / Listener / WS
 │       ├── servlet/                  # REST API（Register / Login / Me / Logout / Users / Messages）
-│       ├── filter/AuthFilter.java    # 登录态过滤器（对应 PR04）
+│       ├── filter/                   # AuthFilter 登录态守卫 + AdminFilter 管理员守卫
 │       ├── listener/                 # 会话销毁 → 用户离场（对应 PR04~06 的 SessionLifecycleListener）
 │       ├── chat/                     # WebSocket 端点 /ws/chat + 握手配置器
 │       ├── model/                    # Account / User / Message（不可变 record）
@@ -102,7 +103,9 @@ MyJakartaChatRoom/
 | POST | `/api/logout` | 登出（销毁会话，触发离场广播） | 200 | — |
 | GET | `/api/users` | 在线用户列表 | 200 | 401 |
 | GET | `/api/messages?after={id}` | 历史消息（after 为增量游标） | 200 | 401 |
-| POST | `/api/messages` | 发送消息，`{"content":"..."}` | 201 | 400 / 401 |
+| POST | `/api/messages` | 发送消息，`{"content":"..."}` | 201 | 400 / 401 / 403 禁言 |
+| DELETE | `/api/admin/messages/{id}` | 管理员删除聊天消息 | 200 | 401 / 403 / 404 |
+| POST | `/api/admin/users/{username}/mute` | 禁言，`{"minutes":10}`；0 表示解禁 | 200 | 400 / 401 / 403 / 404 |
 
 ## WebSocket 协议（`/ws/chat`）
 
@@ -115,6 +118,10 @@ MyJakartaChatRoom/
 {"type":"message","data":{"id":3,"type":"chat","username":"alice","displayName":"小明","content":"你好","createdAt":1792810797079}}
 // 在线名单（登录/登出/超时时推送）
 {"type":"online","data":{"count":2,"users":[{"username":"alice","displayName":"小明","loginAt":...}]}}
+// 管理员删除聊天消息
+{"type":"messageDeleted","data":{"id":3}}
+// 禁言或解禁后的账号状态
+{"type":"accountUpdated","data":{"username":"alice","displayName":"小明","role":"USER","mutedUntil":1794793622541}}
 ```
 
 客户端 → 服务端：`"ping"`，服务端回 `"pong"`（保活探测）。
@@ -125,7 +132,7 @@ MyJakartaChatRoom/
 | --- | --- |
 | PR00 Servlet 基础 | 全部 REST Servlet |
 | PR01 线程安全集合 / HTML 转义 | `ChatRoom` 的并发容器；消息由 Vue 插值转义输出 |
-| PR02 HTTP 语义（状态码） | REST API 的 200/201/400/401/409 全套状态码 |
+| PR02 HTTP 语义（状态码） | REST API 的 200/201/400/401/403/404/409 状态码 |
 | PR03 session / application 作用域 | HttpSession 登录态；全局状态收拢为显式的 `ChatRoom` 对象 |
 | PR03 maxMessageCount | `ChatRoom.MAX_HISTORY = 200`，超出丢弃最老 |
 | PR04 AuthFilter | `filter/AuthFilter.java`（未登录返回 401 JSON 而非重定向） |
@@ -140,5 +147,5 @@ MyJakartaChatRoom/
 
 ```bash
 cd backend
-mvn test        # 8 项：聊天室规则、账户认证、消息持久化与历史上限
+mvn test        # 13 项：聊天室规则、角色权限、旧库迁移、账户与消息持久化
 ```

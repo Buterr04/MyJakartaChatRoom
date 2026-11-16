@@ -42,10 +42,16 @@ async function handleRegister(username, displayName, password) {
 function handleLogout() {
   me.value = null
 }
+
+function handleAccountUpdated(account) {
+  if (me.value?.username.toLowerCase() === account.username.toLowerCase()) {
+    me.value = { ...me.value, ...account }
+  }
+}
 </script>
 
 <template>
   <div v-if="checking" class="boot">正在进入聊天室…</div>
   <LoginView v-else-if="!me" :login="handleLogin" :register="handleRegister" />
-  <ChatView v-else :me="me" @logout="handleLogout" />
+  <ChatView v-else :me="me" @logout="handleLogout" @account-updated="handleAccountUpdated" />
 </template>

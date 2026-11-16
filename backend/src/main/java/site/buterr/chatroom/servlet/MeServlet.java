@@ -2,12 +2,15 @@ package site.buterr.chatroom.servlet;
 
 import java.io.IOException;
 import java.util.Map;
+import java.util.Optional;
 
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 
+import site.buterr.chatroom.model.Account;
+import site.buterr.chatroom.store.ChatRepository;
 import site.buterr.chatroom.util.JsonUtil;
 
 /**
@@ -16,11 +19,22 @@ import site.buterr.chatroom.util.JsonUtil;
  */
 public class MeServlet extends HttpServlet {
 
+    private final ChatRepository repository;
+
+    public MeServlet(ChatRepository repository) {
+        this.repository = repository;
+    }
+
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
         HttpSession session = req.getSession(false);
-        JsonUtil.write(resp, HttpServletResponse.SC_OK,
-                Map.of("username", String.valueOf(session.getAttribute("username")),
-                        "displayName", String.valueOf(session.getAttribute("displayName"))));
+        Optional<Account> account = repository.findAccount(String.valueOf(session.getAttribute("username")));
+        if (account.isEmpty()) {
+            JsonUtil.write(resp, HttpServletResponse.SC_UNAUTHORIZED, Map.of("error", "账户不存在"));
+            return;
+        }
+        session.setAttribute("role", account.get().role().name());
+        session.setAttribute("mutedUntil", account.get().mutedUntil());
+        JsonUtil.write(resp, HttpServletResponse.SC_OK, account.get());
     }
 }

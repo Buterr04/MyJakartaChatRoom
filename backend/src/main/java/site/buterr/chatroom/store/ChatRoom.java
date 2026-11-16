@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -18,6 +19,7 @@ import jakarta.websocket.Session;
 
 import site.buterr.chatroom.model.Account;
 import site.buterr.chatroom.model.Message;
+import site.buterr.chatroom.model.Role;
 import site.buterr.chatroom.model.User;
 import site.buterr.chatroom.util.JsonUtil;
 
@@ -59,21 +61,21 @@ public class ChatRoom {
     }
 
     public User login(Account account) {
-        return login(account.username(), account.displayName());
+        return login(account.username(), account.displayName(), account.role(), account.mutedUntil());
     }
 
     public User login(String username) {
-        return login(username, username);
+        return login(username, username, Role.USER, 0);
     }
 
-    private User login(String username, String displayName) {
+    private User login(String username, String displayName, Role role, long mutedUntil) {
         synchronized (this) {
             for (String name : onlineUsers.keySet()) {
                 if (name.equalsIgnoreCase(username)) {
                     throw new DuplicateUsernameException(name);
                 }
             }
-            User user = new User(username, displayName, System.currentTimeMillis());
+            User user = new User(username, displayName, role, mutedUntil, System.currentTimeMillis());
             onlineUsers.put(username, user);
             publishSystem(displayName + " 加入了聊天室");
             return user;
@@ -99,10 +101,54 @@ public class ChatRoom {
     public Message sendChat(String username, String content) {
         synchronized (this) {
             User sender = onlineUsers.get(username);
+            if (sender != null && sender.mutedUntil() > System.currentTimeMillis()) {
+                throw new AccountMutedException(sender.mutedUntil());
+            }
             String displayName = sender == null ? username : sender.displayName();
             Message message = createMessage(Message.TYPE_CHAT, username, displayName, filterSensitive(content));
             broadcastPacket(Map.of("type", "message", "data", message));
             return message;
+        }
+    }
+
+    public boolean deleteMessage(long id) {
+        synchronized (this) {
+            Message target = history.stream()
+                    .filter(message -> message.id() == id && Message.TYPE_CHAT.equals(message.type()))
+                    .findFirst()
+                    .orElse(null);
+            if (target == null || repository != null && !repository.deleteMessage(id)) {
+                return false;
+            }
+            history.remove(target);
+            broadcastPacket(Map.of("type", "messageDeleted", "data", Map.of("id", id)));
+            return true;
+        }
+    }
+
+    public Optional<Account> setMutedUntil(String username, long mutedUntil) {
+        synchronized (this) {
+            User online = findOnlineUser(username);
+            Account account;
+            if (repository != null) {
+                Optional<Account> persisted = repository.setMutedUntil(username, mutedUntil);
+                if (persisted.isEmpty()) {
+                    return Optional.empty();
+                }
+                account = persisted.get();
+                online = findOnlineUser(account.username());
+            } else {
+                if (online == null) {
+                    return Optional.empty();
+                }
+                account = new Account(online.username(), online.displayName(), online.role(), mutedUntil);
+            }
+            if (online != null) {
+                onlineUsers.put(online.username(), new User(online.username(), online.displayName(),
+                        online.role(), mutedUntil, online.loginAt()));
+            }
+            broadcastPacket(Map.of("type", "accountUpdated", "data", account));
+            return Optional.of(account);
         }
     }
 
@@ -153,6 +199,13 @@ public class ChatRoom {
         history.add(message);
         trimHistory();
         return message;
+    }
+
+    private User findOnlineUser(String username) {
+        return onlineUsers.values().stream()
+                .filter(user -> user.username().equalsIgnoreCase(username))
+                .findFirst()
+                .orElse(null);
     }
 
     private Map<String, Object> onlineSnapshot() {
