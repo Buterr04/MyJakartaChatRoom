@@ -61,21 +61,21 @@ public class ChatRoom {
     }
 
     public User login(Account account) {
-        return login(account.username(), account.displayName(), account.role(), account.mutedUntil());
+        return login(account.username(), account.displayName(), account.role(), account.mutedUntil(), account.avatar());
     }
 
     public User login(String username) {
-        return login(username, username, Role.USER, 0);
+        return login(username, username, Role.USER, 0, null);
     }
 
-    private User login(String username, String displayName, Role role, long mutedUntil) {
+    private User login(String username, String displayName, Role role, long mutedUntil, String avatar) {
         synchronized (this) {
             for (String name : onlineUsers.keySet()) {
                 if (name.equalsIgnoreCase(username)) {
                     throw new DuplicateUsernameException(name);
                 }
             }
-            User user = new User(username, displayName, role, mutedUntil, System.currentTimeMillis());
+            User user = new User(username, displayName, role, mutedUntil, System.currentTimeMillis(), avatar);
             onlineUsers.put(username, user);
             publishSystem(displayName + " 加入了聊天室");
             return user;
@@ -141,14 +141,67 @@ public class ChatRoom {
                 if (online == null) {
                     return Optional.empty();
                 }
-                account = new Account(online.username(), online.displayName(), online.role(), mutedUntil);
+                account = new Account(online.username(), online.displayName(), online.role(), mutedUntil, online.avatar());
             }
             if (online != null) {
                 onlineUsers.put(online.username(), new User(online.username(), online.displayName(),
-                        online.role(), mutedUntil, online.loginAt()));
+                        online.role(), mutedUntil, online.loginAt(), online.avatar()));
             }
             broadcastPacket(Map.of("type", "accountUpdated", "data", account));
             return Optional.of(account);
+        }
+    }
+
+    public Optional<Account> setRole(String username, Role role) {
+        synchronized (this) {
+            User online = findOnlineUser(username);
+            Account account;
+            if (repository != null) {
+                Optional<Account> persisted = repository.setRole(username, role);
+                if (persisted.isEmpty()) {
+                    return Optional.empty();
+                }
+                account = persisted.get();
+                online = findOnlineUser(account.username());
+            } else {
+                if (online == null) {
+                    return Optional.empty();
+                }
+                account = new Account(online.username(), online.displayName(), role, online.mutedUntil(), online.avatar());
+            }
+            updateOnlineAccount(account);
+            broadcastPacket(Map.of("type", "accountUpdated", "data", account));
+            return Optional.of(account);
+        }
+    }
+
+    public Optional<Account> setAvatar(String username, String avatar) {
+        synchronized (this) {
+            User online = findOnlineUser(username);
+            Account account;
+            if (repository != null) {
+                Optional<Account> persisted = repository.setAvatar(username, avatar);
+                if (persisted.isEmpty()) {
+                    return Optional.empty();
+                }
+                account = persisted.get();
+            } else {
+                if (online == null) {
+                    return Optional.empty();
+                }
+                account = new Account(online.username(), online.displayName(), online.role(), online.mutedUntil(), avatar);
+            }
+            updateOnlineAccount(account);
+            broadcastPacket(Map.of("type", "accountUpdated", "data", account));
+            return Optional.of(account);
+        }
+    }
+
+    private void updateOnlineAccount(Account account) {
+        User online = findOnlineUser(account.username());
+        if (online != null) {
+            onlineUsers.put(online.username(), new User(online.username(), online.displayName(), account.role(),
+                    account.mutedUntil(), online.loginAt(), account.avatar()));
         }
     }
 

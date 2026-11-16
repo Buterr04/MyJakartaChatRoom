@@ -32,7 +32,7 @@ class ChatRepositoryTest {
         ChatRepository reopened = new ChatRepository(database);
         Account authenticated = reopened.authenticate("ALICE", "correct-password").orElseThrow();
         assertEquals("Alice", authenticated.displayName());
-        assertEquals(Role.ADMIN, authenticated.role());
+        assertEquals(Role.USER, authenticated.role());
         assertTrue(reopened.authenticate("alice", "wrong-password").isEmpty());
         assertThrows(DuplicateAccountException.class,
                 () -> reopened.register("Alice", "Another Alice", "another-password"));
@@ -59,7 +59,7 @@ class ChatRepositoryTest {
     void laterAccountsAreUsersAndMuteStateSurvivesReopen() {
         Path database = temporaryDirectory.resolve("chat.db");
         ChatRepository repository = new ChatRepository(database);
-        repository.register("admin", "Admin", "correct-password");
+        repository.register("owner", "Owner", "correct-password");
         repository.register("alice", "Alice", "correct-password");
 
         long mutedUntil = System.currentTimeMillis() + 60_000;
@@ -72,6 +72,42 @@ class ChatRepositoryTest {
                 reopened.authenticate("alice", "correct-password").orElseThrow().mutedUntil());
         assertEquals(0, reopened.setMutedUntil("alice", 0).orElseThrow().mutedUntil());
         assertTrue(reopened.setMutedUntil("missing", mutedUntil).isEmpty());
+    }
+
+    @Test
+    void defaultAdministratorIsAlwaysAvailable() {
+        Path database = temporaryDirectory.resolve("default-admin.db");
+        ChatRepository repository = new ChatRepository(database);
+
+        Account administrator = repository.authenticate("Admin", "admin").orElseThrow();
+        assertEquals(Role.ADMIN, administrator.role());
+        assertEquals("Admin", administrator.displayName());
+        assertEquals(Role.ADMIN,
+                new ChatRepository(database).authenticate("ADMIN", "admin").orElseThrow().role());
+        assertThrows(DuplicateAccountException.class,
+                () -> repository.register("admin", "Another Admin", "another-password"));
+    }
+
+    @Test
+    void rolesAndAvatarsArePersistedAndListed() {
+        Path database = temporaryDirectory.resolve("profiles.db");
+        ChatRepository repository = new ChatRepository(database);
+        repository.register("alice", "Alice", "correct-password");
+        String avatar = "data:image/png;base64,profile-image";
+
+        Account promoted = repository.setRole("ALICE", Role.ADMIN).orElseThrow();
+        assertEquals(Role.ADMIN, promoted.role());
+        Account withAvatar = repository.setAvatar("alice", avatar).orElseThrow();
+        assertEquals(avatar, withAvatar.avatar());
+
+        ChatRepository reopened = new ChatRepository(database);
+        Account restored = reopened.findAccount("alice").orElseThrow();
+        assertEquals(Role.ADMIN, restored.role());
+        assertEquals(avatar, restored.avatar());
+        assertEquals(2, reopened.listAccounts().size());
+        assertEquals(Role.USER, reopened.setRole("alice", Role.USER).orElseThrow().role());
+        assertEquals(null, reopened.setAvatar("alice", null).orElseThrow().avatar());
+        assertTrue(reopened.setRole("missing", Role.ADMIN).isEmpty());
     }
 
     @Test

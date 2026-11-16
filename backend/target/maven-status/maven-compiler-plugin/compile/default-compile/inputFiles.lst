@@ -10,6 +10,7 @@
 /Users/daiguorui/IdeaProjects/MyJakartaChatRoom/backend/src/main/java/site/buterr/chatroom/model/User.java
 /Users/daiguorui/IdeaProjects/MyJakartaChatRoom/backend/src/main/java/site/buterr/chatroom/servlet/AdminMessagesServlet.java
 /Users/daiguorui/IdeaProjects/MyJakartaChatRoom/backend/src/main/java/site/buterr/chatroom/servlet/AdminUsersServlet.java
+/Users/daiguorui/IdeaProjects/MyJakartaChatRoom/backend/src/main/java/site/buterr/chatroom/servlet/AvatarServlet.java
 /Users/daiguorui/IdeaProjects/MyJakartaChatRoom/backend/src/main/java/site/buterr/chatroom/servlet/LoginServlet.java
 /Users/daiguorui/IdeaProjects/MyJakartaChatRoom/backend/src/main/java/site/buterr/chatroom/servlet/LogoutServlet.java
 /Users/daiguorui/IdeaProjects/MyJakartaChatRoom/backend/src/main/java/site/buterr/chatroom/servlet/MeServlet.java

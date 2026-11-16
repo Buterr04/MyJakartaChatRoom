@@ -143,8 +143,8 @@ site.buterr.chatroom
 ├── Main                     # 启动入口 + 全部装配（唯一的"胶水"）
 ├── model
 │   ├── Role                 # USER / ADMIN
-│   ├── Account              # 账户公开资料 + 角色 + 禁言截止时间，不含密码信息
-│   ├── User                 # 在线账户资料 + loginAt
+│   ├── Account              # 账户公开资料 + 角色 + 头像 + 禁言截止时间，不含密码信息
+│   ├── User                 # 在线账户资料 + 头像 + loginAt
 │   └── Message              # record(id, type, username, displayName, content, createdAt)
 ├── store                    # 领域状态与持久化（不依赖 servlet API，可单测）
 │   ├── ChatRoom             # 在线用户 + 历史 + 连接登记 + 广播
@@ -157,11 +157,12 @@ site.buterr.chatroom
 │   ├── RegisterServlet      # POST /api/register
 │   ├── LoginServlet         # POST /api/login（密码认证）
 │   ├── MeServlet            # GET  /api/me
+│   ├── AvatarServlet        # PUT  /api/me/avatar
 │   ├── LogoutServlet        # POST /api/logout
 │   ├── UsersServlet         # GET  /api/users
 │   ├── MessagesServlet      # GET/POST /api/messages
 │   ├── AdminMessagesServlet # DELETE /api/admin/messages/{id}
-│   └── AdminUsersServlet    # POST /api/admin/users/{username}/mute
+│   └── AdminUsersServlet    # GET 用户列表；POST 禁言或更新角色
 ├── filter
 │   ├── AuthFilter           # /api/* 登录态守卫（放行注册与登录）
 │   └── AdminFilter          # /api/admin/* 管理员守卫，越权返回 403
@@ -378,19 +379,22 @@ public void sessionDestroyed(HttpSessionEvent se) {
 
 所有接口同源（生产模式与后端同端口；开发模式经 Vite 代理）。除 `/api/register` 与 `/api/login` 外都需要有效会话，否则 401；`/api/admin/*` 还要求 `ADMIN` 角色，否则 403。
 
-首个注册账号自动成为 `ADMIN`，之后注册的账号为 `USER`。旧版数据库启动时通过 `PRAGMA table_info` 检测并补充 `role`、`muted_until` 列；如果旧库没有管理员，最早注册的账号自动补任，已有账户与消息不会删除。
+每次启动都会确保存在默认管理员 `Admin`（初始密码 `admin`），普通注册账户均为 `USER`。旧版数据库启动时通过 `PRAGMA table_info` 检测并补充 `role`、`muted_until`、`avatar` 列；如果旧库没有管理员，最早注册的账号自动补任，已有账户与消息不会删除。头像以经过格式、文件签名和 1MB 大小校验的 Data URL 保存，角色变更通过 `accountUpdated` 实时同步，`AdminFilter` 每次按数据库最新角色鉴权。
 
 | 方法 | 路径 | 请求体 | 成功响应 | 失败 |
 | --- | --- | --- | --- | --- |
 | POST | `/api/register` | `{"username":"alice","displayName":"小明","password":"..."}` | `201` 账户资料（不含密码信息） | `400` 校验失败；`409` 用户名已存在 |
 | POST | `/api/login` | `{"username":"alice","password":"..."}` | `200` 在线用户资料（含 `role`、`mutedUntil`） + Set-Cookie | `400` 缺少字段；`401` 凭据错误；`409` 已在线 |
 | GET | `/api/me` | — | `200` 最新账户公开资料（含角色与禁言状态） | `401` |
+| PUT | `/api/me/avatar` | `{"avatar":"data:image/png;base64,..."}`，null/空串恢复默认 | `200` 最新账户资料 | `400` 图片格式或大小错误；`401` |
 | POST | `/api/logout` | — | `200` `{"ok":true}`（并触发离场广播） | — |
 | GET | `/api/users` | — | `200` `{"count":2,"users":[User...]}`（按登录时间排序） | `401` |
 | GET | `/api/messages?after={id}` | — | `200` `{"messages":[Message...]}`；`after>0` 时只返回 id 更大的增量 | `401` |
 | POST | `/api/messages` | `{"content":"..."}` | `201` `{"message":Message}` | `400` 空/超 500 字符；`401`；`403` 禁言 |
 | DELETE | `/api/admin/messages/{id}` | — | `200` `{"deletedId":3}` | `401`；`403` 非管理员；`404` 消息不存在或为系统消息 |
 | POST | `/api/admin/users/{username}/mute` | `{"minutes":10}`，0~10080，0 表示解禁 | `200` `{"account":Account}` | `400` 参数错误；`401`；`403`；`404` 账户不存在 |
+| GET | `/api/admin/users` | — | `200` `{"users":[Account...]}` | `401`；`403` |
+| POST | `/api/admin/users/{username}/role` | `{"role":"ADMIN"}` 或 `{"role":"USER"}` | `200` `{"account":Account}` | `400` 参数错误或尝试取消默认/当前管理员；`401`；`403`；`404` |
 
 Message 的 JSON 形态：
 
@@ -515,10 +519,10 @@ ws.onclose = (event) => {
 ### 8.1 单元测试（后端核心逻辑）
 
 ```bash
-mvn test        # ChatRoomTest 8 个用例 + ChatRepositoryTest 5 个用例
+mvn test        # ChatRoomTest 9 个用例 + ChatRepositoryTest 7 个用例
 ```
 
-覆盖：登录产生系统消息、重名拒绝（含大小写变体）、敏感词替换、历史上限裁剪、离场清理、`historyAfter` 增量语义、禁言/解禁及消息删除；SQLite 测试还覆盖账户跨重开认证、角色初始化、禁言持久化、旧库无损迁移、消息恢复及持久历史上限。`ChatRoom` 不依赖 servlet 容器（WS Session 相关方法在测试中自然为空转），所以能直接 new 出来测。
+覆盖：登录产生系统消息、重名拒绝（含大小写变体）、敏感词替换、历史上限裁剪、离场清理、`historyAfter` 增量语义、禁言/解禁、角色/头像同步及消息删除；SQLite 测试还覆盖账户跨重开认证、默认管理员、角色与头像持久化、用户列表、禁言持久化、旧库无损迁移、消息恢复及持久历史上限。`ChatRoom` 不依赖 servlet 容器（WS Session 相关方法在测试中自然为空转），所以能直接 new 出来测。
 
 ### 8.2 REST 冒烟（curl，见第 5 节示例）
 

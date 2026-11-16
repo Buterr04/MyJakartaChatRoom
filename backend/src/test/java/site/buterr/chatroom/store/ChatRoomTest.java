@@ -126,4 +126,20 @@ class ChatRoomTest {
         assertFalse(room.deleteMessage(chat.id()));
         assertTrue(room.historyAfter(0).stream().noneMatch(message -> message.id() == chat.id()));
     }
+
+    @Test
+    @DisplayName("角色和头像更新会同步到在线用户")
+    void roleAndAvatarUpdatesReachOnlineUser() {
+        ChatRoom room = new ChatRoom(200);
+        room.login(new Account("alice", "Alice", Role.USER, 0));
+
+        Account promoted = room.setRole("alice", Role.ADMIN).orElseThrow();
+        assertEquals(Role.ADMIN, promoted.role());
+        assertEquals(Role.ADMIN, room.onlineUsers().get(0).role());
+
+        Account updated = room.setAvatar("alice", "data:image/png;base64,avatar").orElseThrow();
+        assertEquals("data:image/png;base64,avatar", updated.avatar());
+        assertEquals("data:image/png;base64,avatar", room.onlineUsers().get(0).avatar());
+        assertEquals(Role.ADMIN, room.onlineUsers().get(0).role());
+    }
 }

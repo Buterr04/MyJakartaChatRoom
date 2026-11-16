@@ -32,11 +32,11 @@ async function submit() {
     error.value = '用户名长度需要在 2~20 个字符之间'
     return
   }
-  if (password.value.length < 8 || password.value.length > 128) {
-    error.value = '密码长度需要在 8~128 个字符之间'
-    return
-  }
   if (mode.value === 'register') {
+    if (password.value.length < 8 || password.value.length > 128) {
+      error.value = '密码长度需要在 8~128 个字符之间'
+      return
+    }
     if (display.length < 2 || display.length > 20) {
       error.value = '显示名称长度需要在 2~20 个字符之间'
       return
@@ -90,7 +90,7 @@ async function submit() {
           v-model="password"
           type="password"
           maxlength="128"
-          placeholder="密码（8~128 个字符）"
+          :placeholder="mode === 'login' ? '密码' : '密码（8~128 个字符）'"
           :autocomplete="mode === 'login' ? 'current-password' : 'new-password'"
         />
         <input

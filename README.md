@@ -24,7 +24,8 @@
 
 - 用户注册与密码登录：用户名忽略大小写唯一，显示名称用于聊天展示，密码使用随机盐 PBKDF2 哈希保存
 - SQLite 持久化账户与最近 200 条聊天/系统消息，重启后恢复历史；在线用户和 WebSocket 连接不跨重启恢复
-- 角色权限：首个注册账号自动成为管理员，旧数据库升级时由最早账号补任；管理员可删除聊天消息、禁言或解禁用户
+- 个人主页：展示用户名、显示名称与权限，支持上传或恢复默认头像，头像在页头和在线名单中同步显示
+- 角色权限：内置默认管理员 `Admin`（密码 `admin`）；管理员可管理全部账户、任命或取消管理员、删除聊天消息、禁言或解禁用户
 - HttpSession 保持登录态，刷新页面自动恢复；同一账户不能重复在线
 - 实时聊天：发消息走 REST（拿到明确的 201/400/401 状态码），新消息经 WebSocket 广播给所有在线用户
 - 系统消息：成员加入 / 离开实时广播
@@ -51,6 +52,8 @@ mvn compile exec:java
 
 # 打开 http://localhost:8080
 ```
+
+首次启动会自动创建默认管理员：用户名 `Admin`，密码 `admin`。
 
 ### 开发模式（前后端热更新）
 
@@ -100,12 +103,15 @@ MyJakartaChatRoom/
 | POST | `/api/register` | 注册，`{"username":"...","displayName":"...","password":"..."}` | 201 + 账户资料 | 400 校验失败 / 409 用户名已存在 |
 | POST | `/api/login` | 登录，`{"username":"...","password":"..."}` | 200 + 用户信息 | 400 校验失败 / 401 凭据错误 / 409 已在线 |
 | GET | `/api/me` | 当前登录用户（恢复会话用） | 200 | 401 |
+| PUT | `/api/me/avatar` | 更新头像，`{"avatar":"data:image/png;base64,..."}`；null 恢复默认 | 200 | 400 / 401 |
 | POST | `/api/logout` | 登出（销毁会话，触发离场广播） | 200 | — |
 | GET | `/api/users` | 在线用户列表 | 200 | 401 |
 | GET | `/api/messages?after={id}` | 历史消息（after 为增量游标） | 200 | 401 |
 | POST | `/api/messages` | 发送消息，`{"content":"..."}` | 201 | 400 / 401 / 403 禁言 |
 | DELETE | `/api/admin/messages/{id}` | 管理员删除聊天消息 | 200 | 401 / 403 / 404 |
 | POST | `/api/admin/users/{username}/mute` | 禁言，`{"minutes":10}`；0 表示解禁 | 200 | 400 / 401 / 403 / 404 |
+| GET | `/api/admin/users` | 全部注册账户列表 | 200 | 401 / 403 |
+| POST | `/api/admin/users/{username}/role` | 更新角色，`{"role":"ADMIN"}` 或 `USER` | 200 | 400 / 401 / 403 / 404 |
 
 ## WebSocket 协议（`/ws/chat`）
 
@@ -147,5 +153,5 @@ MyJakartaChatRoom/
 
 ```bash
 cd backend
-mvn test        # 13 项：聊天室规则、角色权限、旧库迁移、账户与消息持久化
+mvn test        # 16 项：聊天室规则、角色/头像、旧库迁移、账户与消息持久化
 ```

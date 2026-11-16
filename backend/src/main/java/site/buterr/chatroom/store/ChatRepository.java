@@ -30,7 +30,7 @@ public final class ChatRepository {
     public void register(String username, String displayName, String password) {
         String sql = """
                 INSERT INTO accounts(username, display_name, password_hash, role)
-                VALUES (?, ?, ?, CASE WHEN NOT EXISTS (SELECT 1 FROM accounts) THEN 'ADMIN' ELSE 'USER' END)
+                VALUES (?, ?, ?, 'USER')
                 """;
         try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, username);
@@ -48,7 +48,7 @@ public final class ChatRepository {
 
     public Optional<Account> authenticate(String username, String password) {
         String sql = """
-                SELECT username, display_name, password_hash, role, muted_until
+                SELECT username, display_name, password_hash, role, muted_until, avatar
                 FROM accounts WHERE username = ? COLLATE NOCASE
                 """;
         try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -69,6 +69,51 @@ public final class ChatRepository {
             return findAccount(connection, username);
         } catch (SQLException e) {
             throw new IllegalStateException("无法查询账户", e);
+        }
+    }
+
+    public List<Account> listAccounts() {
+        String sql = """
+                SELECT username, display_name, role, muted_until, avatar
+                FROM accounts ORDER BY created_at, username
+                """;
+        List<Account> accounts = new ArrayList<>();
+        try (Connection connection = connect(); Statement statement = connection.createStatement();
+                ResultSet result = statement.executeQuery(sql)) {
+            while (result.next()) {
+                accounts.add(readAccount(result));
+            }
+            return accounts;
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法查询账户列表", e);
+        }
+    }
+
+    public Optional<Account> setRole(String username, Role role) {
+        String sql = "UPDATE accounts SET role = ? WHERE username = ? COLLATE NOCASE";
+        try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, role.name());
+            statement.setString(2, username);
+            if (statement.executeUpdate() == 0) {
+                return Optional.empty();
+            }
+            return findAccount(connection, username);
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法更新账户角色", e);
+        }
+    }
+
+    public Optional<Account> setAvatar(String username, String avatar) {
+        String sql = "UPDATE accounts SET avatar = ? WHERE username = ? COLLATE NOCASE";
+        try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, avatar);
+            statement.setString(2, username);
+            if (statement.executeUpdate() == 0) {
+                return Optional.empty();
+            }
+            return findAccount(connection, username);
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法更新头像", e);
         }
     }
 
@@ -161,7 +206,8 @@ public final class ChatRepository {
                         password_hash TEXT NOT NULL,
                         created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
                         role TEXT NOT NULL DEFAULT 'USER' CHECK(role IN ('USER', 'ADMIN')),
-                        muted_until INTEGER NOT NULL DEFAULT 0
+                        muted_until INTEGER NOT NULL DEFAULT 0,
+                        avatar TEXT
                     )
                     """);
             statement.executeUpdate("""
@@ -176,6 +222,7 @@ public final class ChatRepository {
                     """);
             migrateAccounts(connection);
             ensureAdministrator(connection);
+            ensureDefaultAdministrator(connection);
         } catch (SQLException e) {
             throw new IllegalStateException("无法初始化 SQLite 数据库", e);
         }
@@ -197,6 +244,20 @@ public final class ChatRepository {
             if (!columns.contains("muted_until")) {
                 statement.executeUpdate("ALTER TABLE accounts ADD COLUMN muted_until INTEGER NOT NULL DEFAULT 0");
             }
+            if (!columns.contains("avatar")) {
+                statement.executeUpdate("ALTER TABLE accounts ADD COLUMN avatar TEXT");
+            }
+        }
+    }
+
+    private void ensureDefaultAdministrator(Connection connection) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO accounts(username, display_name, password_hash, role)
+                VALUES ('Admin', 'Admin', ?, 'ADMIN')
+                ON CONFLICT(username) DO UPDATE SET role = 'ADMIN'
+                """)) {
+            statement.setString(1, PasswordHasher.hash("admin"));
+            statement.executeUpdate();
         }
     }
 
@@ -214,7 +275,7 @@ public final class ChatRepository {
 
     private Optional<Account> findAccount(Connection connection, String username) throws SQLException {
         String sql = """
-                SELECT username, display_name, role, muted_until
+                SELECT username, display_name, role, muted_until, avatar
                 FROM accounts WHERE username = ? COLLATE NOCASE
                 """;
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -227,7 +288,7 @@ public final class ChatRepository {
 
     private Account readAccount(ResultSet result) throws SQLException {
         return new Account(result.getString("username"), result.getString("display_name"),
-                Role.valueOf(result.getString("role")), result.getLong("muted_until"));
+                Role.valueOf(result.getString("role")), result.getLong("muted_until"), result.getString("avatar"));
     }
 
     private Connection connect() throws SQLException {

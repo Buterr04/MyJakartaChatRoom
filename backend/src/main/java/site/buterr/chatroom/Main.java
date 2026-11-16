@@ -20,6 +20,7 @@ import site.buterr.chatroom.filter.AuthFilter;
 import site.buterr.chatroom.listener.SessionLifecycleListener;
 import site.buterr.chatroom.servlet.AdminMessagesServlet;
 import site.buterr.chatroom.servlet.AdminUsersServlet;
+import site.buterr.chatroom.servlet.AvatarServlet;
 import site.buterr.chatroom.servlet.LoginServlet;
 import site.buterr.chatroom.servlet.RegisterServlet;
 import site.buterr.chatroom.servlet.LogoutServlet;
@@ -101,7 +102,7 @@ public final class Main {
 
         FilterDef adminDef = new FilterDef();
         adminDef.setFilterName("adminFilter");
-        adminDef.setFilter(new AdminFilter());
+        adminDef.setFilter(new AdminFilter(repository));
         ctx.addFilterDef(adminDef);
         FilterMap adminMap = new FilterMap();
         adminMap.setFilterName("adminFilter");
@@ -111,12 +112,13 @@ public final class Main {
         Tomcat.addServlet(ctx, "registerServlet", new RegisterServlet(repository)).addMapping("/api/register");
         Tomcat.addServlet(ctx, "loginServlet", new LoginServlet(chatRoom, repository)).addMapping("/api/login");
         Tomcat.addServlet(ctx, "meServlet", new MeServlet(repository)).addMapping("/api/me");
+        Tomcat.addServlet(ctx, "avatarServlet", new AvatarServlet(chatRoom)).addMapping("/api/me/avatar");
         Tomcat.addServlet(ctx, "logoutServlet", new LogoutServlet()).addMapping("/api/logout");
         Tomcat.addServlet(ctx, "usersServlet", new UsersServlet(chatRoom)).addMapping("/api/users");
         Tomcat.addServlet(ctx, "messagesServlet", new MessagesServlet(chatRoom)).addMapping("/api/messages");
         Tomcat.addServlet(ctx, "adminMessagesServlet", new AdminMessagesServlet(chatRoom))
                 .addMapping("/api/admin/messages/*");
-        Tomcat.addServlet(ctx, "adminUsersServlet", new AdminUsersServlet(chatRoom))
+        Tomcat.addServlet(ctx, "adminUsersServlet", new AdminUsersServlet(chatRoom, repository))
                 .addMapping("/api/admin/users/*");
 
         tomcat.start();

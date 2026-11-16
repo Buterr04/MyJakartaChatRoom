@@ -1,5 +1,8 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import AdminUsersDialog from './AdminUsersDialog.vue'
+import ProfileDialog from './ProfileDialog.vue'
+import UserAvatar from './UserAvatar.vue'
 
 const props = defineProps({
   me: { type: Object, required: true },
@@ -15,6 +18,9 @@ const draft = ref('')
 const sending = ref(false)
 const sendError = ref('')
 const actionError = ref('')
+const profileOpen = ref(false)
+const adminOpen = ref(false)
+const accountRevision = ref(0)
 const listEl = ref(null)
 const deletedMessageIds = new Set()
 const isAdmin = computed(() => props.me.role === 'ADMIN')
@@ -119,6 +125,7 @@ function removeMessage(id) {
 }
 
 function applyAccount(account) {
+  accountRevision.value += 1
   users.value = users.value.map((user) => (
     user.username.toLowerCase() === account.username.toLowerCase() ? { ...user, ...account } : user
   ))
@@ -243,7 +250,11 @@ function isOwn(message) {
           {{ connected ? '已连接' : '连接中…' }}
         </span>
         <span v-if="isAdmin" class="role-chip">管理员</span>
-        <span class="me-chip">{{ me.displayName }}</span>
+        <button v-if="isAdmin" class="btn-manage" @click="adminOpen = true">用户管理</button>
+        <button class="profile-trigger" title="打开个人主页" @click="profileOpen = true">
+          <UserAvatar :user="me" />
+          <span>{{ me.displayName }}</span>
+        </button>
         <button class="btn-ghost" @click="logout">退出</button>
       </div>
     </header>
@@ -263,9 +274,7 @@ function isOwn(message) {
         </div>
         <ul>
           <li v-for="u in users" :key="u.username">
-            <span class="avatar" :class="{ self: u.username === me.username }">
-              {{ u.displayName.slice(0, 1).toUpperCase() }}
-            </span>
+            <UserAvatar :user="u" :class="{ self: u.username === me.username }" />
             <span class="name">
               {{ u.displayName }}<i v-if="u.username === me.username">（我）</i>
               <i v-if="u.role === 'ADMIN'">（管理员）</i>
@@ -323,5 +332,21 @@ function isOwn(message) {
         </footer>
       </main>
     </div>
+
+    <ProfileDialog
+      v-if="profileOpen"
+      :me="me"
+      @close="profileOpen = false"
+      @updated="applyAccount"
+    />
+    <AdminUsersDialog
+      v-if="adminOpen"
+      :me="me"
+      :online-users="users"
+      :refresh-token="accountRevision"
+      @close="adminOpen = false"
+      @updated="applyAccount"
+      @mute="muteUser"
+    />
   </div>
 </template>
