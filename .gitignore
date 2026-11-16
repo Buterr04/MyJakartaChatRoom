@@ -29,7 +29,16 @@ replay_pid*
 # IntelliJ IDEA files
 .idea/
 
+# Maven build output
+backend/target/
+
+# Node dependencies
+frontend/node_modules/
+
 # maven wrapper files
 
 # Local chat database and SQLite sidecar files
 chatroom.db*
+
+# Local uploaded chat images
+uploads/
