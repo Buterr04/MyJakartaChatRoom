@@ -46,7 +46,7 @@
                           └────────────────────────────────────────────────┘
 ```
 
-架构一句话概括：**命令走 REST（request/response，状态码明确），事件走 WebSocket（服务端主动推送）**。`ChatRoom` 管理在线用户和连接等运行时状态，`ChatRepository` 将账户及最近 200 条消息保存到 SQLite；重启只恢复账户和历史，不恢复在线状态。
+架构一句话概括：**命令走 REST（request/response，状态码明确），事件走 WebSocket（服务端主动推送）**。`ChatRoom` 管理在线用户和连接等运行时状态，`ChatRepository` 将账户及最近 200 条消息保存到 SQLite，`ImageStorage` 将聊天图片按 UUID 文件名保存到本地上传目录；重启只恢复账户、消息和图片元数据，不恢复在线状态。
 
 ### 1.2 技术选型与理由
 
@@ -121,6 +121,7 @@ cd frontend && npm run dev
 | `APP_PORT` | `8080` | HTTP/WS 监听端口 |
 | `APP_STATIC_DIR` | 自动探测 | 静态资源目录；显式指定后跳过探测 |
 | `APP_DB_PATH` | `chatroom.db` | SQLite 文件路径，相对于后端启动时的工作目录 |
+| `APP_UPLOAD_DIR` | `uploads` | 聊天图片与 multipart 临时文件目录，相对于后端启动目录 |
 
 ### 3.4 常用命令速查
 
@@ -145,10 +146,12 @@ site.buterr.chatroom
 │   ├── Role                 # USER / ADMIN
 │   ├── Account              # 账户公开资料 + 角色 + 头像 + 禁言截止时间，不含密码信息
 │   ├── User                 # 在线账户资料 + 头像 + loginAt
-│   └── Message              # record(id, type, username, displayName, content, createdAt)
+│   ├── ChatImage            # 图片 id、原始文件名、真实 MIME 与大小
+│   └── Message              # 消息内容 + 可选 ChatImage
 ├── store                    # 领域状态与持久化（不依赖 servlet API，可单测）
 │   ├── ChatRoom             # 在线用户 + 历史 + 连接登记 + 广播
 │   ├── ChatRepository       # SQLite 账户与消息读写
+│   ├── ImageStorage         # PNG/JPEG/GIF/WebP 签名校验与本地图片存取
 │   ├── PasswordHasher       # 随机盐 PBKDF2 哈希与密码验证
 │   ├── AccountMutedException # 禁言账户尝试发言时抛出
 │   ├── ChatRoomHolder       # 静态引用，供 WebSocket 端点获取 ChatRoom
@@ -161,6 +164,8 @@ site.buterr.chatroom
 │   ├── LogoutServlet        # POST /api/logout
 │   ├── UsersServlet         # GET  /api/users
 │   ├── MessagesServlet      # GET/POST /api/messages
+│   ├── ImageMessageServlet  # POST /api/messages/image（multipart）
+│   ├── ImageServlet         # GET  /api/images/{id}
 │   ├── AdminMessagesServlet # DELETE /api/admin/messages/{id}
 │   └── AdminUsersServlet    # GET 用户列表；POST 禁言或更新角色
 ├── filter
@@ -379,7 +384,7 @@ public void sessionDestroyed(HttpSessionEvent se) {
 
 所有接口同源（生产模式与后端同端口；开发模式经 Vite 代理）。除 `/api/register` 与 `/api/login` 外都需要有效会话，否则 401；`/api/admin/*` 还要求 `ADMIN` 角色，否则 403。
 
-每次启动都会确保存在默认管理员 `Admin`（初始密码 `admin`），普通注册账户均为 `USER`。旧版数据库启动时通过 `PRAGMA table_info` 检测并补充 `role`、`muted_until`、`avatar` 列；如果旧库没有管理员，最早注册的账号自动补任，已有账户与消息不会删除。头像以经过格式、文件签名和 1MB 大小校验的 Data URL 保存，角色变更通过 `accountUpdated` 实时同步，`AdminFilter` 每次按数据库最新角色鉴权。
+每次启动都会确保存在默认管理员 `Admin`（初始密码 `admin`），普通注册账户均为 `USER`。旧版数据库启动时通过 `PRAGMA table_info` 检测并补充账户资料列及消息的 `image_id`、`image_name`、`image_type`、`image_size` 列，已有账户与消息不会删除。头像以 Data URL 保存；聊天图片则校验文件签名后写入 `APP_UPLOAD_DIR`，消息仅保存元数据。删除图片消息或裁剪历史时同步清理元数据和本地文件，`AdminFilter` 每次按数据库最新角色鉴权。
 
 | 方法 | 路径 | 请求体 | 成功响应 | 失败 |
 | --- | --- | --- | --- | --- |
@@ -391,6 +396,8 @@ public void sessionDestroyed(HttpSessionEvent se) {
 | GET | `/api/users` | — | `200` `{"count":2,"users":[User...]}`（按登录时间排序） | `401` |
 | GET | `/api/messages?after={id}` | — | `200` `{"messages":[Message...]}`；`after>0` 时只返回 id 更大的增量 | `401` |
 | POST | `/api/messages` | `{"content":"..."}` | `201` `{"message":Message}` | `400` 空/超 500 字符；`401`；`403` 禁言 |
+| POST | `/api/messages/image` | multipart/form-data，文件字段 `image`，最大 10MB | `201` `{"message":Message}` | `400` 非支持图片；`401`；`403` 禁言；`413` 超限 |
+| GET | `/api/images/{id}` | — | `200` 原始图片字节，带正确 MIME 与 `nosniff` | `401`；`404` 元数据或文件不存在 |
 | DELETE | `/api/admin/messages/{id}` | — | `200` `{"deletedId":3}` | `401`；`403` 非管理员；`404` 消息不存在或为系统消息 |
 | POST | `/api/admin/users/{username}/mute` | `{"minutes":10}`，0~10080，0 表示解禁 | `200` `{"account":Account}` | `400` 参数错误；`401`；`403`；`404` 账户不存在 |
 | GET | `/api/admin/users` | — | `200` `{"users":[Account...]}` | `401`；`403` |
@@ -401,6 +408,7 @@ Message 的 JSON 形态：
 ```json
 {"id":3, "type":"chat", "username":"alice", "displayName":"小明", "content":"你好", "createdAt":1792810797079}
 {"id":1, "type":"system", "username":null, "displayName":null, "content":"小明 加入了聊天室", "createdAt":...}
+{"id":4, "type":"chat", "username":"alice", "displayName":"小明", "content":"", "createdAt":..., "image":{"id":"745ce293-a0e2-44c2-a612-518f93131be2","originalName":"pixel.png","mediaType":"image/png","size":68}}
 ```
 
 curl 冒烟示例（`-c/-b` 维持会话）：
@@ -410,6 +418,7 @@ curl -s -H 'Content-Type: application/json' -d '{"username":"alice","displayName
 curl -s -c a.jar -H 'Content-Type: application/json' -d '{"username":"alice","password":"correct-horse-123"}' localhost:8080/api/login
 curl -s -b a.jar -H 'Content-Type: application/json' -d '{"content":"你好"}' localhost:8080/api/messages
 curl -s -b a.jar 'localhost:8080/api/messages?after=0'
+curl -s -b a.jar -F 'image=@pixel.png;type=image/png' localhost:8080/api/messages/image
 ```
 
 ## 6. WebSocket 协议规范
@@ -482,6 +491,8 @@ App.vue
 
 渲染规则：`m.type === 'system'` 渲染居中灰 pill；否则按稳定 `username === me.username` 分左右气泡，以 `displayName` 展示发送者。**所有插值都是 `{{ }}` 默认转义**，消息内容不做 `v-html`——这是对 PR01"输出端转义"结论的直接沿用。
 
+输入区的“图片”按钮使用 multipart 直接发送文件，不经过 Base64。图片消息复用普通消息的持久化与 WebSocket 广播链路，前端根据 `message.image` 渲染内嵌图片，点击在新标签页查看原图；禁言或上传中时不能发送。
+
 管理员在消息上看到删除按钮，在其他在线用户旁看到禁言/解禁按钮。按钮可见性只负责界面展示，真正的权限校验由 `AdminFilter` 完成。`messageDeleted` 会从所有客户端移除消息；`accountUpdated` 会同步在线名单和当前用户的禁言状态，解禁或到期后输入框恢复可用。
 
 ### 7.4 WebSocket 客户端生命周期（ChatView.vue）
@@ -519,10 +530,10 @@ ws.onclose = (event) => {
 ### 8.1 单元测试（后端核心逻辑）
 
 ```bash
-mvn test        # ChatRoomTest 9 个用例 + ChatRepositoryTest 7 个用例
+mvn test        # ChatRoomTest 10 个 + ChatRepositoryTest 8 个 + ImageStorageTest 2 个
 ```
 
-覆盖：登录产生系统消息、重名拒绝（含大小写变体）、敏感词替换、历史上限裁剪、离场清理、`historyAfter` 增量语义、禁言/解禁、角色/头像同步及消息删除；SQLite 测试还覆盖账户跨重开认证、默认管理员、角色与头像持久化、用户列表、禁言持久化、旧库无损迁移、消息恢复及持久历史上限。`ChatRoom` 不依赖 servlet 容器（WS Session 相关方法在测试中自然为空转），所以能直接 new 出来测。
+覆盖：登录产生系统消息、重名拒绝、敏感词替换、历史上限、禁言/解禁、角色/头像同步、消息删除、图片跨重启恢复与文件清理；SQLite 测试覆盖账户、角色、头像、图片元数据、旧库无损迁移和持久历史上限；`ImageStorageTest` 验证图片签名、文件读写删除及伪造图片拒绝。
 
 ### 8.2 REST 冒烟（curl，见第 5 节示例）
 
@@ -552,6 +563,8 @@ mvn test        # ChatRoomTest 9 个用例 + ChatRepositoryTest 7 个用例
 4. **webapp 类加载器不含应用类路径**。按类名实例化监听器时抛 `ClassNotFoundException` 导致整个上下文启动失败。修复：`standardCtx.setParentClassLoader(Main.class.getClassLoader())`。
 
 5. **异步 Remote 不允许重叠写入**。连续快速调用 `getAsyncRemote().sendText()` 会抛 `TEXT_FULL_WRITING`，消息静默丢失。修复：按连接排队 + SendHandler 回调链串行发送（见 4.4）。
+
+6. **程序化 Servlet 要显式配置 multipart**。图片上传映射在 `Main` 中注册，因此给 `ImageMessageServlet` 的 `Wrapper` 设置 `MultipartConfigElement`，限制单文件 10MB，并把临时目录指向 `APP_UPLOAD_DIR`。
 
 > 学习价值：这些坑恰好解释了"外部 Tomcat 部署 WAR"时代那些"看不见的默认配置"都做了什么，是理解 Servlet 容器工作原理的好教材。
 

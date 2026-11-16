@@ -22,6 +22,7 @@ const profileOpen = ref(false)
 const adminOpen = ref(false)
 const accountRevision = ref(0)
 const listEl = ref(null)
+const imageInput = ref(null)
 const deletedMessageIds = new Set()
 const isAdmin = computed(() => props.me.role === 'ADMIN')
 const isMuted = computed(() => Number(props.me.mutedUntil || 0) > now.value)
@@ -159,6 +160,41 @@ async function send() {
   }
 }
 
+function chooseImage() {
+  sendError.value = ''
+  imageInput.value?.click()
+}
+
+async function imageSelected(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file || sending.value || !connected.value || isMuted.value) return
+  if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(file.type)) {
+    sendError.value = '请选择 PNG、JPEG、GIF 或 WebP 图片'
+    return
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    sendError.value = '图片不能超过 10MB'
+    return
+  }
+  sending.value = true
+  sendError.value = ''
+  try {
+    const form = new FormData()
+    form.append('image', file, file.name)
+    const res = await fetch('/api/messages/image', { method: 'POST', body: form })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      sendError.value = data.error || '图片发送失败，请稍后再试'
+      return
+    }
+  } catch {
+    sendError.value = '网络异常，请稍后再试'
+  } finally {
+    sending.value = false
+  }
+}
+
 async function deleteMessage(message) {
   if (!isAdmin.value || !window.confirm('确定删除这条消息吗？')) return
   actionError.value = ''
@@ -239,6 +275,10 @@ function isUserMuted(user) {
 function isOwn(message) {
   return message.username === props.me.username
 }
+
+function imageUrl(image) {
+  return `/api/images/${encodeURIComponent(image.id)}`
+}
 </script>
 
 <template>
@@ -303,7 +343,17 @@ function isOwn(message) {
                 <span class="time">{{ formatTime(m.createdAt) }}</span>
                 <button v-if="isAdmin" class="msg-action" @click="deleteMessage(m)">删除</button>
               </div>
-              <div class="bubble">{{ m.content }}</div>
+              <div v-if="m.image" class="bubble image-bubble">
+                <a :href="imageUrl(m.image)" target="_blank" rel="noopener" class="chat-image-link">
+                  <img
+                    class="chat-image"
+                    :src="imageUrl(m.image)"
+                    :alt="m.image.originalName"
+                    @load="scrollBottom"
+                  />
+                </a>
+              </div>
+              <div v-else class="bubble">{{ m.content }}</div>
             </div>
           </template>
           <div v-if="messages.length === 0" class="empty">
@@ -314,6 +364,20 @@ function isOwn(message) {
         <footer class="composer">
           <p v-if="sendError" class="send-error">{{ sendError }}</p>
           <div class="composer-row">
+            <input
+              ref="imageInput"
+              class="visually-hidden"
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              @change="imageSelected"
+            />
+            <button
+              class="btn-image"
+              :disabled="!connected || sending || isMuted"
+              @click="chooseImage"
+            >
+              {{ sending ? '发送中…' : '图片' }}
+            </button>
             <input
               v-model="draft"
               maxlength="500"

@@ -7,6 +7,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -14,6 +15,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import site.buterr.chatroom.model.Account;
+import site.buterr.chatroom.model.ChatImage;
 import site.buterr.chatroom.model.Message;
 import site.buterr.chatroom.model.Role;
 
@@ -145,15 +147,17 @@ public final class ChatRepository {
     }
 
     public List<Message> loadRecentMessages(int limit) {
-        String sql = "SELECT id, type, username, display_name, content, created_at FROM messages ORDER BY id DESC LIMIT ?";
+        String sql = """
+                SELECT id, type, username, display_name, content, created_at,
+                       image_id, image_name, image_type, image_size
+                FROM messages ORDER BY id DESC LIMIT ?
+                """;
         List<Message> reversed = new ArrayList<>();
         try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setInt(1, limit);
             try (ResultSet result = statement.executeQuery()) {
                 while (result.next()) {
-                    reversed.add(new Message(result.getLong("id"), result.getString("type"),
-                            result.getString("username"), result.getString("display_name"),
-                            result.getString("content"), result.getLong("created_at")));
+                    reversed.add(readMessage(result));
                 }
             }
         } catch (SQLException e) {
@@ -168,16 +172,33 @@ public final class ChatRepository {
 
     public Message saveMessage(String type, String username, String displayName, String content,
             long createdAt, int maxHistory) {
+        return saveMessage(type, username, displayName, content, createdAt, maxHistory, null);
+    }
+
+    public Message saveMessage(String type, String username, String displayName, String content,
+            long createdAt, int maxHistory, ChatImage image) {
         try (Connection connection = connect()) {
             connection.setAutoCommit(false);
             try (PreparedStatement insert = connection.prepareStatement(
-                    "INSERT INTO messages(type, username, display_name, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                    """
+                    INSERT INTO messages(type, username, display_name, content, created_at,
+                                         image_id, image_name, image_type, image_size)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
                     Statement.RETURN_GENERATED_KEYS)) {
                 insert.setString(1, type);
                 insert.setString(2, username);
                 insert.setString(3, displayName);
                 insert.setString(4, content);
                 insert.setLong(5, createdAt);
+                insert.setString(6, image == null ? null : image.id());
+                insert.setString(7, image == null ? null : image.originalName());
+                insert.setString(8, image == null ? null : image.mediaType());
+                if (image == null) {
+                    insert.setNull(9, Types.BIGINT);
+                } else {
+                    insert.setLong(9, image.size());
+                }
                 insert.executeUpdate();
                 try (ResultSet keys = insert.getGeneratedKeys()) {
                     if (!keys.next()) {
@@ -186,7 +207,7 @@ public final class ChatRepository {
                     long id = keys.getLong(1);
                     trimMessages(connection, maxHistory);
                     connection.commit();
-                    return new Message(id, type, username, displayName, content, createdAt);
+                    return new Message(id, type, username, displayName, content, createdAt, image);
                 }
             } catch (SQLException e) {
                 connection.rollback();
@@ -194,6 +215,21 @@ public final class ChatRepository {
             }
         } catch (SQLException e) {
             throw new IllegalStateException("无法保存消息", e);
+        }
+    }
+
+    public Optional<ChatImage> findImage(String id) {
+        String sql = """
+                SELECT image_id, image_name, image_type, image_size
+                FROM messages WHERE image_id = ? LIMIT 1
+                """;
+        try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, id);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? Optional.of(readImage(result)) : Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法查询聊天图片", e);
         }
     }
 
@@ -217,10 +253,15 @@ public final class ChatRepository {
                         username TEXT,
                         display_name TEXT,
                         content TEXT NOT NULL,
-                        created_at INTEGER NOT NULL
+                        created_at INTEGER NOT NULL,
+                        image_id TEXT UNIQUE,
+                        image_name TEXT,
+                        image_type TEXT,
+                        image_size INTEGER
                     )
                     """);
             migrateAccounts(connection);
+            migrateMessages(connection);
             ensureAdministrator(connection);
             ensureDefaultAdministrator(connection);
         } catch (SQLException e) {
@@ -261,6 +302,32 @@ public final class ChatRepository {
         }
     }
 
+    private void migrateMessages(Connection connection) throws SQLException {
+        Set<String> columns = new HashSet<>();
+        try (Statement statement = connection.createStatement();
+                ResultSet result = statement.executeQuery("PRAGMA table_info(messages)")) {
+            while (result.next()) {
+                columns.add(result.getString("name"));
+            }
+        }
+        try (Statement statement = connection.createStatement()) {
+            if (!columns.contains("image_id")) {
+                statement.executeUpdate("ALTER TABLE messages ADD COLUMN image_id TEXT");
+            }
+            if (!columns.contains("image_name")) {
+                statement.executeUpdate("ALTER TABLE messages ADD COLUMN image_name TEXT");
+            }
+            if (!columns.contains("image_type")) {
+                statement.executeUpdate("ALTER TABLE messages ADD COLUMN image_type TEXT");
+            }
+            if (!columns.contains("image_size")) {
+                statement.executeUpdate("ALTER TABLE messages ADD COLUMN image_size INTEGER");
+            }
+            statement.executeUpdate(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_image_id ON messages(image_id)");
+        }
+    }
+
     private void ensureAdministrator(Connection connection) throws SQLException {
         try (Statement statement = connection.createStatement()) {
             statement.executeUpdate("""
@@ -289,6 +356,19 @@ public final class ChatRepository {
     private Account readAccount(ResultSet result) throws SQLException {
         return new Account(result.getString("username"), result.getString("display_name"),
                 Role.valueOf(result.getString("role")), result.getLong("muted_until"), result.getString("avatar"));
+    }
+
+    private Message readMessage(ResultSet result) throws SQLException {
+        return new Message(result.getLong("id"), result.getString("type"), result.getString("username"),
+                result.getString("display_name"), result.getString("content"), result.getLong("created_at"),
+                readImage(result));
+    }
+
+    private ChatImage readImage(ResultSet result) throws SQLException {
+        String id = result.getString("image_id");
+        return id == null ? null
+                : new ChatImage(id, result.getString("image_name"), result.getString("image_type"),
+                        result.getLong("image_size"));
     }
 
     private Connection connect() throws SQLException {

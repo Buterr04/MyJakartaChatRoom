@@ -5,6 +5,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Set;
 
+import jakarta.servlet.MultipartConfigElement;
+
 import org.apache.catalina.Context;
 import org.apache.catalina.Wrapper;
 import org.apache.catalina.core.StandardContext;
@@ -21,6 +23,8 @@ import site.buterr.chatroom.listener.SessionLifecycleListener;
 import site.buterr.chatroom.servlet.AdminMessagesServlet;
 import site.buterr.chatroom.servlet.AdminUsersServlet;
 import site.buterr.chatroom.servlet.AvatarServlet;
+import site.buterr.chatroom.servlet.ImageMessageServlet;
+import site.buterr.chatroom.servlet.ImageServlet;
 import site.buterr.chatroom.servlet.LoginServlet;
 import site.buterr.chatroom.servlet.RegisterServlet;
 import site.buterr.chatroom.servlet.LogoutServlet;
@@ -30,6 +34,7 @@ import site.buterr.chatroom.servlet.UsersServlet;
 import site.buterr.chatroom.store.ChatRepository;
 import site.buterr.chatroom.store.ChatRoom;
 import site.buterr.chatroom.store.ChatRoomHolder;
+import site.buterr.chatroom.store.ImageStorage;
 
 /**
  * 聊天室启动入口：内嵌 Tomcat 10.1，{@code mvn compile exec:java} 一条命令即可运行，
@@ -37,7 +42,8 @@ import site.buterr.chatroom.store.ChatRoomHolder;
  *
  * <p>可选环境变量：{@code APP_PORT}（默认 8080）、
  * {@code APP_STATIC_DIR}（前端构建产物目录，默认自动探测 ../frontend/dist）、
- * {@code APP_DB_PATH}（SQLite 数据库，默认 chatroom.db）。</p>
+ * {@code APP_DB_PATH}（SQLite 数据库，默认 chatroom.db）、
+ * {@code APP_UPLOAD_DIR}（聊天图片目录，默认 uploads）。</p>
  */
 public final class Main {
 
@@ -49,7 +55,8 @@ public final class Main {
     public static void main(String[] args) throws Exception {
         int port = Integer.parseInt(System.getenv().getOrDefault("APP_PORT", String.valueOf(DEFAULT_PORT)));
         ChatRepository repository = new ChatRepository(resolveDatabasePath());
-        ChatRoom chatRoom = new ChatRoom(ChatRoom.MAX_HISTORY, repository);
+        ImageStorage imageStorage = new ImageStorage(resolveUploadDirectory());
+        ChatRoom chatRoom = new ChatRoom(ChatRoom.MAX_HISTORY, repository, imageStorage);
         ChatRoomHolder.set(chatRoom);
 
         Tomcat tomcat = new Tomcat();
@@ -116,6 +123,12 @@ public final class Main {
         Tomcat.addServlet(ctx, "logoutServlet", new LogoutServlet()).addMapping("/api/logout");
         Tomcat.addServlet(ctx, "usersServlet", new UsersServlet(chatRoom)).addMapping("/api/users");
         Tomcat.addServlet(ctx, "messagesServlet", new MessagesServlet(chatRoom)).addMapping("/api/messages");
+        Wrapper imageMessageServlet = Tomcat.addServlet(ctx, "imageMessageServlet", new ImageMessageServlet(chatRoom));
+        imageMessageServlet.setMultipartConfigElement(new MultipartConfigElement(
+                imageStorage.directory().toString(), ImageMessageServlet.MAX_IMAGE_BYTES,
+                ImageMessageServlet.MAX_IMAGE_BYTES + 64 * 1024, 1024 * 1024));
+        imageMessageServlet.addMapping("/api/messages/image");
+        Tomcat.addServlet(ctx, "imageServlet", new ImageServlet(repository, imageStorage)).addMapping("/api/images/*");
         Tomcat.addServlet(ctx, "adminMessagesServlet", new AdminMessagesServlet(chatRoom))
                 .addMapping("/api/admin/messages/*");
         Tomcat.addServlet(ctx, "adminUsersServlet", new AdminUsersServlet(chatRoom, repository))
@@ -130,6 +143,11 @@ public final class Main {
     private static Path resolveDatabasePath() {
         String configured = System.getenv("APP_DB_PATH");
         return configured == null || configured.isBlank() ? Path.of("chatroom.db") : Path.of(configured);
+    }
+
+    private static Path resolveUploadDirectory() {
+        String configured = System.getenv("APP_UPLOAD_DIR");
+        return configured == null || configured.isBlank() ? Path.of("uploads") : Path.of(configured);
     }
 
 /**

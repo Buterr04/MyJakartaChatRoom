@@ -1,5 +1,6 @@
 package site.buterr.chatroom.store;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -18,6 +19,7 @@ import jakarta.websocket.CloseReason.CloseCodes;
 import jakarta.websocket.Session;
 
 import site.buterr.chatroom.model.Account;
+import site.buterr.chatroom.model.ChatImage;
 import site.buterr.chatroom.model.Message;
 import site.buterr.chatroom.model.Role;
 import site.buterr.chatroom.model.User;
@@ -34,6 +36,7 @@ public class ChatRoom {
 
     private final int maxHistory;
     private final ChatRepository repository;
+    private final ImageStorage imageStorage;
     private final Map<String, User> onlineUsers = new ConcurrentHashMap<>();
     private final List<Message> history = new ArrayList<>();
     private final Map<String, Set<Session>> wsByHttpSession = new ConcurrentHashMap<>();
@@ -48,12 +51,17 @@ public class ChatRoom {
 
     /** In-memory constructor retained for focused domain tests. */
     public ChatRoom(int maxHistory) {
-        this(maxHistory, null);
+        this(maxHistory, null, null);
     }
 
     public ChatRoom(int maxHistory, ChatRepository repository) {
+        this(maxHistory, repository, null);
+    }
+
+    public ChatRoom(int maxHistory, ChatRepository repository, ImageStorage imageStorage) {
         this.maxHistory = maxHistory;
         this.repository = repository;
+        this.imageStorage = imageStorage;
         if (repository != null) {
             history.addAll(repository.loadRecentMessages(maxHistory));
             history.stream().mapToLong(Message::id).max().ifPresent(last -> idGen.set(last + 1));
@@ -100,14 +108,34 @@ public class ChatRoom {
 
     public Message sendChat(String username, String content) {
         synchronized (this) {
-            User sender = onlineUsers.get(username);
-            if (sender != null && sender.mutedUntil() > System.currentTimeMillis()) {
-                throw new AccountMutedException(sender.mutedUntil());
-            }
+            User sender = requireSendAccess(username);
             String displayName = sender == null ? username : sender.displayName();
             Message message = createMessage(Message.TYPE_CHAT, username, displayName, filterSensitive(content));
             broadcastPacket(Map.of("type", "message", "data", message));
             return message;
+        }
+    }
+
+    public Message sendImage(String username, String originalName, byte[] bytes) throws IOException {
+        synchronized (this) {
+            User sender = requireSendAccess(username);
+            if (imageStorage == null) {
+                throw new IllegalStateException("聊天图片存储尚未配置");
+            }
+            ChatImage image = imageStorage.store(originalName, bytes);
+            try {
+                String displayName = sender == null ? username : sender.displayName();
+                Message message = createMessage(Message.TYPE_CHAT, username, displayName, "", image);
+                broadcastPacket(Map.of("type", "message", "data", message));
+                return message;
+            } catch (RuntimeException | Error e) {
+                try {
+                    imageStorage.delete(image);
+                } catch (IOException cleanupFailure) {
+                    e.addSuppressed(cleanupFailure);
+                }
+                throw e;
+            }
         }
     }
 
@@ -121,6 +149,7 @@ public class ChatRoom {
                 return false;
             }
             history.remove(target);
+            deleteStoredImage(target.image());
             broadcastPacket(Map.of("type", "messageDeleted", "data", Map.of("id", id)));
             return true;
         }
@@ -245,13 +274,25 @@ public class ChatRoom {
     }
 
     private Message createMessage(String type, String username, String displayName, String content) {
+        return createMessage(type, username, displayName, content, null);
+    }
+
+    private Message createMessage(String type, String username, String displayName, String content, ChatImage image) {
         long createdAt = System.currentTimeMillis();
         Message message = repository == null
-                ? new Message(idGen.getAndIncrement(), type, username, displayName, content, createdAt)
-                : repository.saveMessage(type, username, displayName, content, createdAt, maxHistory);
+                ? new Message(idGen.getAndIncrement(), type, username, displayName, content, createdAt, image)
+                : repository.saveMessage(type, username, displayName, content, createdAt, maxHistory, image);
         history.add(message);
         trimHistory();
         return message;
+    }
+
+    private User requireSendAccess(String username) {
+        User sender = onlineUsers.get(username);
+        if (sender != null && sender.mutedUntil() > System.currentTimeMillis()) {
+            throw new AccountMutedException(sender.mutedUntil());
+        }
+        return sender;
     }
 
     private User findOnlineUser(String username) {
@@ -323,7 +364,19 @@ public class ChatRoom {
 
     private void trimHistory() {
         while (history.size() > maxHistory) {
-            history.remove(0);
+            Message removed = history.remove(0);
+            deleteStoredImage(removed.image());
+        }
+    }
+
+    private void deleteStoredImage(ChatImage image) {
+        if (image == null || imageStorage == null) {
+            return;
+        }
+        try {
+            imageStorage.delete(image);
+        } catch (IOException | IllegalArgumentException e) {
+            System.err.println("清理聊天图片失败: " + image.id() + " - " + e.getMessage());
         }
     }
 

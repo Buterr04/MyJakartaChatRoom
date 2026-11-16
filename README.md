@@ -28,6 +28,7 @@
 - 角色权限：内置默认管理员 `Admin`（密码 `admin`）；管理员可管理全部账户、任命或取消管理员、删除聊天消息、禁言或解禁用户
 - HttpSession 保持登录态，刷新页面自动恢复；同一账户不能重复在线
 - 实时聊天：发消息走 REST（拿到明确的 201/400/401 状态码），新消息经 WebSocket 广播给所有在线用户
+- 图片消息：像微信表情一样内嵌展示，支持 10MB 以内的 PNG、JPEG、GIF、WebP，GIF 保留动画，点击可查看原图
 - 系统消息：成员加入 / 离开实时广播
 - 在线名单侧栏：人数与列表随登录 / 登出 / 会话超时实时更新
 - 敏感词过滤（沿袭 PR04）、消息历史上限 200 条（对应 PR03 的 maxMessageCount）、消息长度校验
@@ -67,7 +68,7 @@ cd frontend && npm install && npm run dev
 # 打开 http://localhost:5173
 ```
 
-可选环境变量：`APP_PORT`（默认 8080）、`APP_STATIC_DIR`（静态目录，默认自动探测 `../frontend/dist` → `frontend/dist` → 纯 API 模式）、`APP_DB_PATH`（默认 `chatroom.db`，相对于后端启动时的工作目录）。
+可选环境变量：`APP_PORT`（默认 8080）、`APP_STATIC_DIR`（静态目录，默认自动探测 `../frontend/dist` → `frontend/dist` → 纯 API 模式）、`APP_DB_PATH`（默认 `chatroom.db`）、`APP_UPLOAD_DIR`（默认 `uploads`，保存聊天图片；文件路径均相对于后端启动目录）。
 
 ## 目录结构
 
@@ -85,6 +86,7 @@ MyJakartaChatRoom/
 │       ├── store/ChatRoom.java       # 运行时状态：在线用户 + 消息历史 + WS 连接登记 + 广播
 │       ├── store/ChatRepository.java # SQLite 账户与消息持久化
 │       ├── store/PasswordHasher.java # 随机盐 PBKDF2 密码哈希
+│       ├── store/ImageStorage.java   # 聊天图片格式校验、UUID 文件存取与清理
 │       └── util/JsonUtil.java        # JSON 读写封装
 │   └── src/test/...                  # ChatRoom 与 SQLite 持久化单元测试
 └── frontend/                         # Vite + Vue 3 前端
@@ -108,6 +110,8 @@ MyJakartaChatRoom/
 | GET | `/api/users` | 在线用户列表 | 200 | 401 |
 | GET | `/api/messages?after={id}` | 历史消息（after 为增量游标） | 200 | 401 |
 | POST | `/api/messages` | 发送消息，`{"content":"..."}` | 201 | 400 / 401 / 403 禁言 |
+| POST | `/api/messages/image` | multipart 字段 `image`，发送图片消息 | 201 | 400 / 401 / 403 / 413 |
+| GET | `/api/images/{id}` | 读取聊天图片（登录用户） | 200 图片字节 | 401 / 404 |
 | DELETE | `/api/admin/messages/{id}` | 管理员删除聊天消息 | 200 | 401 / 403 / 404 |
 | POST | `/api/admin/users/{username}/mute` | 禁言，`{"minutes":10}`；0 表示解禁 | 200 | 400 / 401 / 403 / 404 |
 | GET | `/api/admin/users` | 全部注册账户列表 | 200 | 401 / 403 |
@@ -153,5 +157,5 @@ MyJakartaChatRoom/
 
 ```bash
 cd backend
-mvn test        # 16 项：聊天室规则、角色/头像、旧库迁移、账户与消息持久化
+mvn test        # 20 项：聊天室规则、角色/头像、图片存取、旧库迁移与消息持久化
 ```

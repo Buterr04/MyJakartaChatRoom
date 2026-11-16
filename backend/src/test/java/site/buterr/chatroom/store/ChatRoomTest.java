@@ -5,10 +5,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.NoSuchFileException;
+import java.nio.file.Path;
+import java.util.Base64;
 import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import site.buterr.chatroom.model.Account;
 import site.buterr.chatroom.model.Message;
@@ -16,6 +20,12 @@ import site.buterr.chatroom.model.Role;
 import site.buterr.chatroom.model.User;
 
 class ChatRoomTest {
+
+    private static final byte[] PNG = Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=");
+
+    @TempDir
+    Path temporaryDirectory;
 
     @Test
     @DisplayName("登录后用户在线，并产生一条加入的系统消息")
@@ -141,5 +151,30 @@ class ChatRoomTest {
         assertEquals("data:image/png;base64,avatar", updated.avatar());
         assertEquals("data:image/png;base64,avatar", room.onlineUsers().get(0).avatar());
         assertEquals(Role.ADMIN, room.onlineUsers().get(0).role());
+    }
+
+    @Test
+    @DisplayName("图片消息跨重启恢复，删除时清理元数据和文件")
+    void imageMessageIsRestoredAndDeletedWithItsFile() throws Exception {
+        Path database = temporaryDirectory.resolve("chat.db");
+        ImageStorage storage = new ImageStorage(temporaryDirectory.resolve("uploads"));
+        ChatRepository repository = new ChatRepository(database);
+        ChatRoom room = new ChatRoom(200, repository, storage);
+        room.login("alice");
+
+        Message sent = room.sendImage("alice", "../pixel.png", PNG);
+        assertEquals("pixel.png", sent.image().originalName());
+        assertEquals(PNG.length, storage.read(sent.image()).length);
+
+        ChatRoom restored = new ChatRoom(200, new ChatRepository(database), storage);
+        Message restoredMessage = restored.historyAfter(0).stream()
+                .filter(message -> message.id() == sent.id())
+                .findFirst()
+                .orElseThrow();
+        assertEquals(sent.image(), restoredMessage.image());
+
+        assertTrue(restored.deleteMessage(sent.id()));
+        assertTrue(repository.findImage(sent.image().id()).isEmpty());
+        assertThrows(NoSuchFileException.class, () -> storage.read(sent.image()));
     }
 }

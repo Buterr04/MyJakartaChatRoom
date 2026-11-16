@@ -523,6 +523,32 @@ input {
   border-top-right-radius: 4px;
 }
 
+.msg.own .image-bubble,
+.msg.other .image-bubble {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 12px;
+}
+
+.chat-image-link {
+  display: block;
+  overflow: hidden;
+  border-radius: 12px;
+  line-height: 0;
+}
+
+.chat-image {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(260px, 60vw);
+  max-height: 280px;
+  object-fit: contain;
+  background: #f3f5fa;
+  cursor: zoom-in;
+}
+
 .empty {
   margin: auto;
   color: var(--muted);
@@ -562,6 +588,25 @@ input {
 
 .composer-row input:disabled {
   background: #f5f7fa;
+  cursor: not-allowed;
+}
+
+.btn-image {
+  min-width: 64px;
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  color: var(--primary-dark);
+  font-weight: 600;
+}
+
+.btn-image:hover:not(:disabled) {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+}
+
+.btn-image:disabled {
+  opacity: 0.5;
   cursor: not-allowed;
 }
 

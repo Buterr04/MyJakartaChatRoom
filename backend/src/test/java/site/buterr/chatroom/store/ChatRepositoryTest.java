@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import site.buterr.chatroom.model.Account;
+import site.buterr.chatroom.model.ChatImage;
 import site.buterr.chatroom.model.Message;
 import site.buterr.chatroom.model.Role;
 
@@ -125,6 +126,21 @@ class ChatRepositoryTest {
     }
 
     @Test
+    void imageMetadataSurvivesRepositoryReopen() {
+        Path database = temporaryDirectory.resolve("images.db");
+        ChatRepository repository = new ChatRepository(database);
+        ChatImage image = new ChatImage("2d57ef6d-9a50-4f5b-930f-e4f1a7252ee6",
+                "pixel.png", "image/png", 68);
+
+        repository.saveMessage("chat", "alice", "Alice", "", 1, 10, image);
+
+        ChatRepository reopened = new ChatRepository(database);
+        assertEquals(image, reopened.findImage(image.id()).orElseThrow());
+        assertEquals(image, reopened.loadRecentMessages(10).get(0).image());
+        assertTrue(reopened.findImage("missing").isEmpty());
+    }
+
+    @Test
     void legacyDatabaseIsMigratedWithoutLosingAccountsOrMessages() throws Exception {
         Path database = temporaryDirectory.resolve("legacy.db");
         try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database);
@@ -163,5 +179,9 @@ class ChatRepositoryTest {
         assertEquals(Role.ADMIN, account.role());
         assertEquals(0, account.mutedUntil());
         assertEquals("legacy", migrated.loadRecentMessages(10).get(0).content());
+        ChatImage image = new ChatImage("2d57ef6d-9a50-4f5b-930f-e4f1a7252ee6",
+                "pixel.png", "image/png", 68);
+        migrated.saveMessage("chat", "alice", "Alice", "", 2, 10, image);
+        assertEquals(image, migrated.findImage(image.id()).orElseThrow());
     }
 }
