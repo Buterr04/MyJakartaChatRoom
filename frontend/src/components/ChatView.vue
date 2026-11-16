@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import AdminUsersDialog from './AdminUsersDialog.vue'
+import AiSettingsDialog from './AiSettingsDialog.vue'
 import ProfileDialog from './ProfileDialog.vue'
 import UserAvatar from './UserAvatar.vue'
 
@@ -20,11 +21,14 @@ const sendError = ref('')
 const actionError = ref('')
 const profileOpen = ref(false)
 const adminOpen = ref(false)
+const aiSettingsOpen = ref(false)
 const accountRevision = ref(0)
 const listEl = ref(null)
 const imageInput = ref(null)
+const messageInput = ref(null)
 const deletedMessageIds = new Set()
 const isAdmin = computed(() => props.me.role === 'ADMIN')
+const isSuperAdmin = computed(() => isAdmin.value && props.me.username.toLowerCase() === 'admin')
 const isMuted = computed(() => Number(props.me.mutedUntil || 0) > now.value)
 
 let ws = null
@@ -165,6 +169,14 @@ function chooseImage() {
   imageInput.value?.click()
 }
 
+function prepareAiPrompt() {
+  if (sending.value || !connected.value || isMuted.value) return
+  if (!/^@AI(?:\s|$)/i.test(draft.value.trimStart())) {
+    draft.value = '@AI ' + draft.value
+  }
+  nextTick(() => messageInput.value?.focus())
+}
+
 async function imageSelected(event) {
   const file = event.target.files?.[0]
   event.target.value = ''
@@ -276,6 +288,10 @@ function isOwn(message) {
   return message.username === props.me.username
 }
 
+function isAi(message) {
+  return !message.username && message.displayName === 'AI助手'
+}
+
 function imageUrl(image) {
   return `/api/images/${encodeURIComponent(image.id)}`
 }
@@ -290,6 +306,7 @@ function imageUrl(image) {
           {{ connected ? '已连接' : '连接中…' }}
         </span>
         <span v-if="isAdmin" class="role-chip">管理员</span>
+        <button v-if="isSuperAdmin" class="btn-manage" @click="aiSettingsOpen = true">AI 设置</button>
         <button v-if="isAdmin" class="btn-manage" @click="adminOpen = true">用户管理</button>
         <button class="profile-trigger" title="打开个人主页" @click="profileOpen = true">
           <UserAvatar :user="me" />
@@ -337,7 +354,7 @@ function imageUrl(image) {
             <div v-if="m.type === 'system'" class="msg sys">
               <span class="sys-pill">{{ m.content }}</span>
             </div>
-            <div v-else class="msg" :class="isOwn(m) ? 'own' : 'other'">
+            <div v-else class="msg" :class="[isOwn(m) ? 'own' : 'other', { ai: isAi(m) }]">
               <div class="meta">
                 <span class="who">{{ m.displayName }}</span>
                 <span class="time">{{ formatTime(m.createdAt) }}</span>
@@ -378,10 +395,19 @@ function imageUrl(image) {
             >
               {{ sending ? '发送中…' : '图片' }}
             </button>
+            <button
+              class="btn-ai"
+              title="在消息开头使用 @AI 提问"
+              :disabled="!connected || sending || isMuted"
+              @click="prepareAiPrompt"
+            >
+              @AI
+            </button>
             <input
+              ref="messageInput"
               v-model="draft"
               maxlength="500"
-              :placeholder="isMuted ? '禁言期间不能发送消息' : '输入消息，回车发送…'"
+              :placeholder="isMuted ? '禁言期间不能发送消息' : '输入消息，或 @AI 提问…'"
               :disabled="!connected || isMuted"
               @keyup.enter="send"
             />
@@ -412,5 +438,6 @@ function imageUrl(image) {
       @updated="applyAccount"
       @mute="muteUser"
     />
+    <AiSettingsDialog v-if="aiSettingsOpen" @close="aiSettingsOpen = false" />
   </div>
 </template>

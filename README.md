@@ -29,6 +29,8 @@
 - HttpSession 保持登录态，刷新页面自动恢复；同一账户不能重复在线
 - 实时聊天：发消息走 REST（拿到明确的 201/400/401 状态码），新消息经 WebSocket 广播给所有在线用户
 - 图片消息：像微信表情一样内嵌展示，支持 10MB 以内的 PNG、JPEG、GIF、WebP，GIF 保留动画，点击可查看原图
+- AI 助手：消息开头输入 `@AI` 即可提问；支持最近聊天上下文，回复异步生成并实时广播，不阻塞其他消息
+- AI 后台配置：仅内置超级管理员 `Admin` 可维护兼容 `chat/completions` 的接口地址、模型、API Key、系统提示词与启用状态，并可测试连接
 - 系统消息：成员加入 / 离开实时广播
 - 在线名单侧栏：人数与列表随登录 / 登出 / 会话超时实时更新
 - 敏感词过滤（沿袭 PR04）、消息历史上限 200 条（对应 PR03 的 maxMessageCount）、消息长度校验
@@ -54,7 +56,15 @@ mvn compile exec:java
 # 打开 http://localhost:8080
 ```
 
-首次启动会自动创建默认管理员：用户名 `Admin`，密码 `admin`。
+首次启动会自动创建默认超级管理员：用户名 `Admin`，密码 `admin`。
+
+### 配置 AI 助手
+
+1. 使用 `Admin` 登录，点击页头的“AI 设置”。
+2. 填写兼容 OpenAI `chat/completions` 的接口地址（如 `https://api.openai.com/v1`）、模型和 API Key，然后保存并测试连接。
+3. 勾选“启用 AI 助手”。任何登录用户都可以点击输入区的 `@AI`，或直接发送 `@AI 你的问题`。
+
+接口地址也可以填写完整的 `/chat/completions` 路径。API Key 保存在本地 SQLite，GET 配置接口只返回 `hasApiKey`，不会把密钥回传给浏览器；编辑时留空表示保持原密钥。AI 请求携带最近 8 条文字聊天作为上下文，连接超时 10 秒、请求超时 60 秒。
 
 ### 开发模式（前后端热更新）
 
@@ -78,13 +88,14 @@ MyJakartaChatRoom/
 │   ├── pom.xml                       # 内嵌 Tomcat 10.1 + WebSocket + Jackson + SQLite + JUnit
 │   └── src/main/java/site/buterr/chatroom/
 │       ├── Main.java                 # 启动入口：装配 Tomcat / Servlet / Filter / Listener / WS
+│       ├── assistant/                # AI 请求调度、上下文构造、HTTP 调用与错误转换
 │       ├── servlet/                  # REST API（Register / Login / Me / Logout / Users / Messages）
-│       ├── filter/                   # AuthFilter 登录态守卫 + AdminFilter 管理员守卫
+│       ├── filter/                   # AuthFilter 登录态 + AdminFilter / SuperAdminFilter 权限守卫
 │       ├── listener/                 # 会话销毁 → 用户离场（对应 PR04~06 的 SessionLifecycleListener）
 │       ├── chat/                     # WebSocket 端点 /ws/chat + 握手配置器
 │       ├── model/                    # Account / User / Message（不可变 record）
 │       ├── store/ChatRoom.java       # 运行时状态：在线用户 + 消息历史 + WS 连接登记 + 广播
-│       ├── store/ChatRepository.java # SQLite 账户与消息持久化
+│       ├── store/ChatRepository.java # SQLite 账户、消息与 AI 配置持久化
 │       ├── store/PasswordHasher.java # 随机盐 PBKDF2 密码哈希
 │       ├── store/ImageStorage.java   # 聊天图片格式校验、UUID 文件存取与清理
 │       └── util/JsonUtil.java        # JSON 读写封装
@@ -95,6 +106,7 @@ MyJakartaChatRoom/
         ├── App.vue                   # 会话恢复 + 注册/登录/聊天视图切换
         └── components/
             ├── LoginView.vue         # 登录/注册卡片
+            ├── AiSettingsDialog.vue  # Admin 专用 AI 配置与连接测试
             └── ChatView.vue          # 聊天主界面 + WebSocket 客户端（重连/去重/自动滚动）
 ```
 
@@ -116,6 +128,9 @@ MyJakartaChatRoom/
 | POST | `/api/admin/users/{username}/mute` | 禁言，`{"minutes":10}`；0 表示解禁 | 200 | 400 / 401 / 403 / 404 |
 | GET | `/api/admin/users` | 全部注册账户列表 | 200 | 401 / 403 |
 | POST | `/api/admin/users/{username}/role` | 更新角色，`{"role":"ADMIN"}` 或 `USER` | 200 | 400 / 401 / 403 / 404 |
+| GET | `/api/super-admin/ai/settings` | Admin 查询 AI 配置，不返回 API Key | 200 | 401 / 403 |
+| PUT | `/api/super-admin/ai/settings` | Admin 保存 AI 配置；Key 留空保持，`clearApiKey:true` 清除 | 200 | 400 / 401 / 403 |
+| POST | `/api/super-admin/ai/settings/test` | Admin 使用已保存配置测试真实接口 | 200 + AI 回复 | 401 / 403 / 502 |
 
 ## WebSocket 协议（`/ws/chat`）
 
@@ -157,5 +172,5 @@ MyJakartaChatRoom/
 
 ```bash
 cd backend
-mvn test        # 20 项：聊天室规则、角色/头像、图片存取、旧库迁移与消息持久化
+mvn test        # 25 项：聊天室规则、角色/头像、图片存取、AI 请求与回复、旧库迁移及持久化
 ```

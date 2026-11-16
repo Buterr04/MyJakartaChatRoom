@@ -10,6 +10,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 
+import site.buterr.chatroom.assistant.AiAssistantService;
 import site.buterr.chatroom.model.Message;
 import site.buterr.chatroom.store.AccountMutedException;
 import site.buterr.chatroom.store.ChatRoom;
@@ -31,9 +32,11 @@ public class MessagesServlet extends HttpServlet {
     }
 
     private final ChatRoom chatRoom;
+    private final AiAssistantService assistant;
 
-    public MessagesServlet(ChatRoom chatRoom) {
+    public MessagesServlet(ChatRoom chatRoom, AiAssistantService assistant) {
         this.chatRoom = chatRoom;
+        this.assistant = assistant;
     }
 
     @Override
@@ -66,6 +69,7 @@ public class MessagesServlet extends HttpServlet {
         String username = (String) session.getAttribute("username");
         try {
             Message message = chatRoom.sendChat(username, content);
+            assistant.handleUserMessage(message);
             JsonUtil.write(resp, HttpServletResponse.SC_CREATED, Map.of("message", message));
         } catch (AccountMutedException e) {
             JsonUtil.write(resp, HttpServletResponse.SC_FORBIDDEN,

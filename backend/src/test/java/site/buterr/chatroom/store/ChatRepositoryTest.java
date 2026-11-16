@@ -15,9 +15,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import site.buterr.chatroom.model.Account;
+import site.buterr.chatroom.model.AiSettings;
 import site.buterr.chatroom.model.ChatImage;
 import site.buterr.chatroom.model.Message;
 import site.buterr.chatroom.model.Role;
+import site.buterr.chatroom.util.JsonUtil;
 
 class ChatRepositoryTest {
 
@@ -183,5 +185,25 @@ class ChatRepositoryTest {
                 "pixel.png", "image/png", 68);
         migrated.saveMessage("chat", "alice", "Alice", "", 2, 10, image);
         assertEquals(image, migrated.findImage(image.id()).orElseThrow());
+    }
+
+    @Test
+    void aiSettingsSurviveRepositoryReopen() {
+        Path database = temporaryDirectory.resolve("ai-settings.db");
+        ChatRepository repository = new ChatRepository(database);
+        assertFalse(repository.loadAiSettings().enabled());
+        assertFalse(repository.loadAiSettings().hasApiKey());
+
+        repository.saveAiSettings("https://example.com/v1", "secret-key", "test-model", true, "简洁回答");
+
+        AiSettings restored = new ChatRepository(database).loadAiSettings();
+        assertEquals("https://example.com/v1", restored.baseUrl());
+        assertEquals("secret-key", restored.apiKey());
+        assertEquals("test-model", restored.model());
+        assertTrue(restored.enabled());
+        assertEquals("简洁回答", restored.systemPrompt());
+        assertTrue(restored.updatedAt() > 0);
+        assertFalse(JsonUtil.toJson(restored).contains("secret-key"));
+        assertFalse(JsonUtil.toJson(restored).contains("apiKey"));
     }
 }

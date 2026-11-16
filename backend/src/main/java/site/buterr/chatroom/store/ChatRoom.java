@@ -116,6 +116,14 @@ public class ChatRoom {
         }
     }
 
+    public Message sendAssistantMessage(String content) {
+        synchronized (this) {
+            Message message = createMessage(Message.TYPE_CHAT, null, "AI助手", filterSensitive(content));
+            broadcastPacket(Map.of("type", "message", "data", message));
+            return message;
+        }
+    }
+
     public Message sendImage(String username, String originalName, byte[] bytes) throws IOException {
         synchronized (this) {
             User sender = requireSendAccess(username);

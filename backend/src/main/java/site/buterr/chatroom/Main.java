@@ -16,12 +16,15 @@ import org.apache.tomcat.util.descriptor.web.FilterDef;
 import org.apache.tomcat.util.descriptor.web.FilterMap;
 import org.apache.tomcat.websocket.server.WsSci;
 
+import site.buterr.chatroom.assistant.AiAssistantService;
 import site.buterr.chatroom.chat.ChatEndpoint;
 import site.buterr.chatroom.filter.AdminFilter;
 import site.buterr.chatroom.filter.AuthFilter;
+import site.buterr.chatroom.filter.SuperAdminFilter;
 import site.buterr.chatroom.listener.SessionLifecycleListener;
 import site.buterr.chatroom.servlet.AdminMessagesServlet;
 import site.buterr.chatroom.servlet.AdminUsersServlet;
+import site.buterr.chatroom.servlet.AiSettingsServlet;
 import site.buterr.chatroom.servlet.AvatarServlet;
 import site.buterr.chatroom.servlet.ImageMessageServlet;
 import site.buterr.chatroom.servlet.ImageServlet;
@@ -57,6 +60,7 @@ public final class Main {
         ChatRepository repository = new ChatRepository(resolveDatabasePath());
         ImageStorage imageStorage = new ImageStorage(resolveUploadDirectory());
         ChatRoom chatRoom = new ChatRoom(ChatRoom.MAX_HISTORY, repository, imageStorage);
+        AiAssistantService assistant = new AiAssistantService(repository, chatRoom);
         ChatRoomHolder.set(chatRoom);
 
         Tomcat tomcat = new Tomcat();
@@ -116,13 +120,23 @@ public final class Main {
         adminMap.addURLPattern("/api/admin/*");
         ctx.addFilterMap(adminMap);
 
+        FilterDef superAdminDef = new FilterDef();
+        superAdminDef.setFilterName("superAdminFilter");
+        superAdminDef.setFilter(new SuperAdminFilter(repository));
+        ctx.addFilterDef(superAdminDef);
+        FilterMap superAdminMap = new FilterMap();
+        superAdminMap.setFilterName("superAdminFilter");
+        superAdminMap.addURLPattern("/api/super-admin/*");
+        ctx.addFilterMap(superAdminMap);
+
         Tomcat.addServlet(ctx, "registerServlet", new RegisterServlet(repository)).addMapping("/api/register");
         Tomcat.addServlet(ctx, "loginServlet", new LoginServlet(chatRoom, repository)).addMapping("/api/login");
         Tomcat.addServlet(ctx, "meServlet", new MeServlet(repository)).addMapping("/api/me");
         Tomcat.addServlet(ctx, "avatarServlet", new AvatarServlet(chatRoom)).addMapping("/api/me/avatar");
         Tomcat.addServlet(ctx, "logoutServlet", new LogoutServlet()).addMapping("/api/logout");
         Tomcat.addServlet(ctx, "usersServlet", new UsersServlet(chatRoom)).addMapping("/api/users");
-        Tomcat.addServlet(ctx, "messagesServlet", new MessagesServlet(chatRoom)).addMapping("/api/messages");
+        Tomcat.addServlet(ctx, "messagesServlet", new MessagesServlet(chatRoom, assistant))
+                .addMapping("/api/messages");
         Wrapper imageMessageServlet = Tomcat.addServlet(ctx, "imageMessageServlet", new ImageMessageServlet(chatRoom));
         imageMessageServlet.setMultipartConfigElement(new MultipartConfigElement(
                 imageStorage.directory().toString(), ImageMessageServlet.MAX_IMAGE_BYTES,
@@ -133,6 +147,10 @@ public final class Main {
                 .addMapping("/api/admin/messages/*");
         Tomcat.addServlet(ctx, "adminUsersServlet", new AdminUsersServlet(chatRoom, repository))
                 .addMapping("/api/admin/users/*");
+        Wrapper aiSettingsServlet = Tomcat.addServlet(ctx, "aiSettingsServlet",
+                new AiSettingsServlet(repository, assistant));
+        aiSettingsServlet.addMapping("/api/super-admin/ai/settings");
+        aiSettingsServlet.addMapping("/api/super-admin/ai/settings/test");
 
         tomcat.start();
         System.out.println("聊天室已启动: http://localhost:" + port

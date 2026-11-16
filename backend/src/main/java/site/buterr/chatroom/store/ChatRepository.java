@@ -15,6 +15,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import site.buterr.chatroom.model.Account;
+import site.buterr.chatroom.model.AiSettings;
 import site.buterr.chatroom.model.ChatImage;
 import site.buterr.chatroom.model.Message;
 import site.buterr.chatroom.model.Role;
@@ -233,6 +234,52 @@ public final class ChatRepository {
         }
     }
 
+    public AiSettings loadAiSettings() {
+        String sql = """
+                SELECT base_url, api_key, model, enabled, system_prompt, updated_at
+                FROM ai_settings WHERE id = 1
+                """;
+        try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet result = statement.executeQuery()) {
+            if (!result.next()) {
+                return AiSettings.empty();
+            }
+            return new AiSettings(result.getString("base_url"), result.getString("api_key"),
+                    result.getString("model"), result.getInt("enabled") == 1,
+                    result.getString("system_prompt"), result.getLong("updated_at"));
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法读取 AI 配置", e);
+        }
+    }
+
+    public AiSettings saveAiSettings(String baseUrl, String apiKey, String model, boolean enabled,
+            String systemPrompt) {
+        long updatedAt = System.currentTimeMillis();
+        String sql = """
+                INSERT INTO ai_settings(id, base_url, api_key, model, enabled, system_prompt, updated_at)
+                VALUES (1, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    base_url = excluded.base_url,
+                    api_key = excluded.api_key,
+                    model = excluded.model,
+                    enabled = excluded.enabled,
+                    system_prompt = excluded.system_prompt,
+                    updated_at = excluded.updated_at
+                """;
+        try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, baseUrl);
+            statement.setString(2, apiKey);
+            statement.setString(3, model);
+            statement.setInt(4, enabled ? 1 : 0);
+            statement.setString(5, systemPrompt);
+            statement.setLong(6, updatedAt);
+            statement.executeUpdate();
+            return new AiSettings(baseUrl, apiKey, model, enabled, systemPrompt, updatedAt);
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法保存 AI 配置", e);
+        }
+    }
+
     private void initialize() {
         try (Connection connection = connect(); Statement statement = connection.createStatement()) {
             statement.executeUpdate("""
@@ -258,6 +305,17 @@ public final class ChatRepository {
                         image_name TEXT,
                         image_type TEXT,
                         image_size INTEGER
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE IF NOT EXISTS ai_settings (
+                        id INTEGER PRIMARY KEY CHECK(id = 1),
+                        base_url TEXT NOT NULL DEFAULT '',
+                        api_key TEXT NOT NULL DEFAULT '',
+                        model TEXT NOT NULL DEFAULT '',
+                        enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0, 1)),
+                        system_prompt TEXT NOT NULL DEFAULT '',
+                        updated_at INTEGER NOT NULL DEFAULT 0
                     )
                     """);
             migrateAccounts(connection);

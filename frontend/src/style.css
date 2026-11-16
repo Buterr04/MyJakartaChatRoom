@@ -36,6 +36,10 @@ input {
   font: inherit;
 }
 
+textarea {
+  font: inherit;
+}
+
 /* ---------- 登录页 ---------- */
 
 .login-page {
@@ -523,6 +527,15 @@ input {
   border-top-right-radius: 4px;
 }
 
+.msg.ai .meta .who {
+  color: var(--primary-dark);
+}
+
+.msg.ai .bubble {
+  background: var(--primary-soft);
+  border-color: #cbd4ff;
+}
+
 .msg.own .image-bubble,
 .msg.other .image-bubble {
   padding: 0;
@@ -591,7 +604,8 @@ input {
   cursor: not-allowed;
 }
 
-.btn-image {
+.btn-image,
+.btn-ai {
   min-width: 64px;
   border: 1.5px solid var(--line);
   border-radius: var(--radius-md);
@@ -600,12 +614,14 @@ input {
   font-weight: 600;
 }
 
-.btn-image:hover:not(:disabled) {
+.btn-image:hover:not(:disabled),
+.btn-ai:hover:not(:disabled) {
   background: var(--primary-soft);
   border-color: var(--primary);
 }
 
-.btn-image:disabled {
+.btn-image:disabled,
+.btn-ai:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -880,6 +896,93 @@ input {
 .admin-empty {
   color: var(--muted);
   font-size: 12px;
+}
+
+.ai-settings-dialog {
+  max-width: 620px;
+}
+
+.ai-settings-form {
+  display: grid;
+  gap: 16px;
+}
+
+.ai-settings-form > label:not(.check-row) {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ai-settings-form input:not([type="checkbox"]),
+.ai-settings-form textarea {
+  width: 100%;
+  padding: 11px 13px;
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  outline: none;
+  background: #fff;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.ai-settings-form textarea {
+  min-height: 104px;
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.ai-settings-form input:focus,
+.ai-settings-form textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(79, 109, 245, 0.15);
+}
+
+.ai-settings-form input:disabled,
+.ai-settings-form textarea:disabled {
+  background: #f5f7fa;
+}
+
+.ai-settings-form small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.key-status {
+  margin-left: 6px;
+  color: #18794e;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #55607a;
+  font-size: 13px;
+}
+
+.check-row input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--primary);
+}
+
+.danger-check {
+  margin-top: -8px;
+  color: var(--danger);
+}
+
+.ai-settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 4px;
 }
 
 .admin-note {

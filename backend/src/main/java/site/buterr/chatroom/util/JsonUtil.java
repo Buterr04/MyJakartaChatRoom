@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 
 import com.fasterxml.jackson.core.JacksonException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import jakarta.servlet.http.HttpServletRequest;
@@ -43,5 +44,9 @@ public final class JsonUtil {
         } catch (JacksonException e) {
             throw new IllegalStateException("JSON 序列化失败", e);
         }
+    }
+
+    public static JsonNode readTree(String json) throws JacksonException {
+        return MAPPER.readTree(json);
     }
 }

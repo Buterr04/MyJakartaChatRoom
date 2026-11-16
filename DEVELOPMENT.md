@@ -46,7 +46,7 @@
                           └────────────────────────────────────────────────┘
 ```
 
-架构一句话概括：**命令走 REST（request/response，状态码明确），事件走 WebSocket（服务端主动推送）**。`ChatRoom` 管理在线用户和连接等运行时状态，`ChatRepository` 将账户及最近 200 条消息保存到 SQLite，`ImageStorage` 将聊天图片按 UUID 文件名保存到本地上传目录；重启只恢复账户、消息和图片元数据，不恢复在线状态。
+架构一句话概括：**命令走 REST（request/response，状态码明确），事件走 WebSocket（服务端主动推送）**。`ChatRoom` 管理在线用户和连接等运行时状态，`ChatRepository` 将账户、AI 配置及最近 200 条消息保存到 SQLite，`ImageStorage` 将聊天图片按 UUID 文件名保存到本地上传目录；重启只恢复账户、消息、图片元数据和 AI 配置，不恢复在线状态。
 
 ### 1.2 技术选型与理由
 
@@ -59,6 +59,7 @@
 | 前端构建 | Vite 7 | 秒级冷启动、原生 ESM、代理配置简单 |
 | 前端框架 | Vue 3（Composition API） | 插值默认转义（XSS 防护与 PR01 的经验一致），单文件组件足够覆盖本项目规模 |
 | 持久化 | SQLite JDBC 3.49.1 | 嵌入式数据库，无需单独安装服务；账户与消息跨重启保留 |
+| AI 接口 | Java 21 HttpClient | 无厂商 SDK 依赖，支持兼容 OpenAI `chat/completions` 的服务，自带连接与请求超时 |
 | 测试 | JUnit 6 | 沿用 PR03 以来的课程选择 |
 
 ---
@@ -123,7 +124,13 @@ cd frontend && npm run dev
 | `APP_DB_PATH` | `chatroom.db` | SQLite 文件路径，相对于后端启动时的工作目录 |
 | `APP_UPLOAD_DIR` | `uploads` | 聊天图片与 multipart 临时文件目录，相对于后端启动目录 |
 
-### 3.4 常用命令速查
+### 3.4 AI 助手配置
+
+AI 配置不通过环境变量管理。使用内置 `Admin` 登录后打开“AI 设置”，保存接口地址、模型、API Key、系统提示词和启用状态，再点击“测试已保存配置”。普通管理员和用户访问 `/api/super-admin/*` 都会收到 403。
+
+接口采用非流式 `POST {baseUrl}/chat/completions`；若地址已经以 `/chat/completions` 结尾则不重复拼接。API Key 通过 `Authorization: Bearer ...` 发送，无认证需求的本地接口可以留空。密钥只存于 SQLite 的 `ai_settings` 表，配置查询响应不包含密钥本身。
+
+### 3.5 常用命令速查
 
 ```bash
 mvn test                              # 跑后端单元测试
@@ -142,6 +149,9 @@ cd frontend && npm run build          # 重新构建前端（改了前端代码�
 ```
 site.buterr.chatroom
 ├── Main                     # 启动入口 + 全部装配（唯一的"胶水"）
+├── assistant
+│   ├── AiAssistantService   # @AI 识别、有限上下文、异步队列与 HTTP 调用
+│   └── AiServiceException   # 可安全展示给前端的 AI 错误
 ├── model
 │   ├── Role                 # USER / ADMIN
 │   ├── Account              # 账户公开资料 + 角色 + 头像 + 禁言截止时间，不含密码信息
@@ -164,13 +174,15 @@ site.buterr.chatroom
 │   ├── LogoutServlet        # POST /api/logout
 │   ├── UsersServlet         # GET  /api/users
 │   ├── MessagesServlet      # GET/POST /api/messages
+│   ├── AiSettingsServlet    # Admin 查询/保存 AI 配置并测试连接
 │   ├── ImageMessageServlet  # POST /api/messages/image（multipart）
 │   ├── ImageServlet         # GET  /api/images/{id}
 │   ├── AdminMessagesServlet # DELETE /api/admin/messages/{id}
 │   └── AdminUsersServlet    # GET 用户列表；POST 禁言或更新角色
 ├── filter
 │   ├── AuthFilter           # /api/* 登录态守卫（放行注册与登录）
-│   └── AdminFilter          # /api/admin/* 管理员守卫，越权返回 403
+│   ├── AdminFilter          # /api/admin/* 管理员守卫，越权返回 403
+│   └── SuperAdminFilter     # /api/super-admin/* 仅允许 Admin + ADMIN
 ├── listener
 │   └── SessionLifecycleListener  # 会话销毁 → ChatRoom.leave
 ├── chat
@@ -377,12 +389,21 @@ public void sessionDestroyed(HttpSessionEvent se) {
 | Tomcat WS 容器线程 | `@OnOpen/@OnClose/@OnError` | `bindWs` / `unbindWs` 操作并发容器 |
 | SendHandler 回调线程 | `sendNext` 逐条发送 | 每连接最多一条发送链（`draining` 保证） |
 | 容器会话回收线程 | `sessionDestroyed` → `leave` | 先关 WS 再删用户 |
+| `ai-assistant`（单守护线程） | 读取 AI 配置、调用上游、保存并广播回复 | 队列上限 16；网络请求不持 `ChatRoom` 锁 |
+
+### 4.6 AI 请求生命周期
+
+`MessagesServlet` 先通过 `ChatRoom.sendChat` 保存并广播用户消息，再把返回的消息交给 `AiAssistantService`。只有 `username != null` 且正文以 `@AI` 开头的用户聊天会触发服务；AI 自己发送的消息不会再次触发，因此不会形成回复循环。
+
+服务在提交任务时截取触发消息之前（含本条）的最近 8 条文字聊天，系统消息和图片消息不进入上下文。单线程有界执行器串行处理请求，避免慢接口阻塞 Tomcat 请求线程或 `ChatRoom` 的同步锁。AI 回复复用 `type='chat'`，以 `username=null`、`displayName='AI助手'` 保存和广播，无需修改原有消息表约束。
+
+`SuperAdminFilter` 同时检查数据库中的用户名和最新角色。`AiSettings` 的 `apiKey` 标有 `@JsonIgnore`，管理接口手工组装公开响应，只暴露 `hasApiKey`。上游原始错误不会转发到聊天，认证、限流、超时和响应格式问题均转换为安全的中文提示。
 
 ---
 
 ## 5. REST API 规范
 
-所有接口同源（生产模式与后端同端口；开发模式经 Vite 代理）。除 `/api/register` 与 `/api/login` 外都需要有效会话，否则 401；`/api/admin/*` 还要求 `ADMIN` 角色，否则 403。
+所有接口同源（生产模式与后端同端口；开发模式经 Vite 代理）。除 `/api/register` 与 `/api/login` 外都需要有效会话，否则 401；`/api/admin/*` 还要求 `ADMIN` 角色，`/api/super-admin/*` 额外要求内置用户名 `Admin`，否则 403。
 
 每次启动都会确保存在默认管理员 `Admin`（初始密码 `admin`），普通注册账户均为 `USER`。旧版数据库启动时通过 `PRAGMA table_info` 检测并补充账户资料列及消息的 `image_id`、`image_name`、`image_type`、`image_size` 列，已有账户与消息不会删除。头像以 Data URL 保存；聊天图片则校验文件签名后写入 `APP_UPLOAD_DIR`，消息仅保存元数据。删除图片消息或裁剪历史时同步清理元数据和本地文件，`AdminFilter` 每次按数据库最新角色鉴权。
 
@@ -402,6 +423,9 @@ public void sessionDestroyed(HttpSessionEvent se) {
 | POST | `/api/admin/users/{username}/mute` | `{"minutes":10}`，0~10080，0 表示解禁 | `200` `{"account":Account}` | `400` 参数错误；`401`；`403`；`404` 账户不存在 |
 | GET | `/api/admin/users` | — | `200` `{"users":[Account...]}` | `401`；`403` |
 | POST | `/api/admin/users/{username}/role` | `{"role":"ADMIN"}` 或 `{"role":"USER"}` | `200` `{"account":Account}` | `400` 参数错误或尝试取消默认/当前管理员；`401`；`403`；`404` |
+| GET | `/api/super-admin/ai/settings` | — | `200` 配置公开字段 + `hasApiKey`，不含 API Key | `401`；`403` |
+| PUT | `/api/super-admin/ai/settings` | `baseUrl`、`model`、`apiKey`、`enabled`、`systemPrompt`、`clearApiKey` | `200` 最新公开配置 | `400` 参数错误；`401`；`403` |
+| POST | `/api/super-admin/ai/settings/test` | — | `200` `{"message":"连接成功","reply":"..."}` | `401`；`403`；`502` 上游错误 |
 
 Message 的 JSON 形态：
 
@@ -409,6 +433,7 @@ Message 的 JSON 形态：
 {"id":3, "type":"chat", "username":"alice", "displayName":"小明", "content":"你好", "createdAt":1792810797079}
 {"id":1, "type":"system", "username":null, "displayName":null, "content":"小明 加入了聊天室", "createdAt":...}
 {"id":4, "type":"chat", "username":"alice", "displayName":"小明", "content":"", "createdAt":..., "image":{"id":"745ce293-a0e2-44c2-a612-518f93131be2","originalName":"pixel.png","mediaType":"image/png","size":68}}
+{"id":5, "type":"chat", "username":null, "displayName":"AI助手", "content":"你好，有什么可以帮你？", "createdAt":...}
 ```
 
 curl 冒烟示例（`-c/-b` 维持会话）：
@@ -455,6 +480,7 @@ frontend/
     ├── App.vue              # 根组件：会话恢复 + 视图切换
     └── components/
         ├── LoginView.vue    # 登录卡片（props: login 函数）
+        ├── AiSettingsDialog.vue # Admin 专用 AI 配置表单与连接测试
         └── ChatView.vue     # 聊天主界面 + WS 客户端全部逻辑
 ```
 
@@ -495,6 +521,8 @@ App.vue
 
 管理员在消息上看到删除按钮，在其他在线用户旁看到禁言/解禁按钮。按钮可见性只负责界面展示，真正的权限校验由 `AdminFilter` 完成。`messageDeleted` 会从所有客户端移除消息；`accountUpdated` 会同步在线名单和当前用户的禁言状态，解禁或到期后输入框恢复可用。
 
+内置 `Admin` 还会看到“AI 设置”按钮。配置弹窗中的 API Key 始终不回显：留空保存表示保持，勾选清除才会删除已保存密钥。“测试已保存配置”不会自动保存当前表单，避免测试未确认的修改。普通用户可点击输入区 `@AI` 按钮，AI 气泡使用独立浅色样式。
+
 ### 7.4 WebSocket 客户端生命周期（ChatView.vue）
 
 ```js
@@ -530,10 +558,10 @@ ws.onclose = (event) => {
 ### 8.1 单元测试（后端核心逻辑）
 
 ```bash
-mvn test        # ChatRoomTest 10 个 + ChatRepositoryTest 8 个 + ImageStorageTest 2 个
+mvn test        # ChatRoomTest 10 + ChatRepositoryTest 9 + ImageStorageTest 2 + AiAssistantServiceTest 4
 ```
 
-覆盖：登录产生系统消息、重名拒绝、敏感词替换、历史上限、禁言/解禁、角色/头像同步、消息删除、图片跨重启恢复与文件清理；SQLite 测试覆盖账户、角色、头像、图片元数据、旧库无损迁移和持久历史上限；`ImageStorageTest` 验证图片签名、文件读写删除及伪造图片拒绝。
+覆盖：登录产生系统消息、重名拒绝、敏感词替换、历史上限、禁言/解禁、角色/头像同步、消息删除、图片跨重启恢复与文件清理；SQLite 测试覆盖账户、角色、头像、图片元数据、AI 配置与密钥序列化脱敏、旧库无损迁移和持久历史上限；`ImageStorageTest` 验证图片签名、文件读写删除及伪造图片拒绝。`AiAssistantServiceTest` 使用 JDK 本地 `HttpServer` 模拟上游，不访问真实 AI 服务，验证请求 JSON、Bearer 认证、异步回复持久化、禁用状态和错误脱敏。
 
 ### 8.2 REST 冒烟（curl，见第 5 节示例）
 
@@ -649,6 +677,8 @@ Tomcat.addServlet(ctx, "searchServlet", new SearchServlet(chatRoom)).addMapping(
 | Maven 编译报 release 21 无效 | Maven 用的 JDK < 21 | `JAVA_HOME` 指向 JDK 21 |
 | 测试间相互影响（409） | ChatRoom 是同一个 JVM 内状态 | 每个用例 new `ChatRoom`；集成测试用随机用户名 + 登出清理 |
 | 消息偶发重复 | WS 重连与 REST 拉取重叠 | 正常现象，前端已按消息 id 去重 |
+| `@AI` 回复提示未配置或未启用 | Admin 尚未保存完整配置或启用开关关闭 | 用内置 `Admin` 打开“AI 设置”，保存后先测试连接再启用 |
+| AI 测试提示 401 / 404 / 429 | 密钥错误 / 地址或模型路径错误 / 限流或额度不足 | 按提示检查配置；接口需兼容非流式 `chat/completions` |
 
 ## 12. 附录：默认参数一览
 
