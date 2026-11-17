@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import AdminUsersDialog from './AdminUsersDialog.vue'
 import AiSettingsDialog from './AiSettingsDialog.vue'
 import ProfileDialog from './ProfileDialog.vue'
+import SpotlightCard from './SpotlightCard.vue'
 import UserAvatar from './UserAvatar.vue'
 
 const props = defineProps({
@@ -299,22 +300,26 @@ function imageUrl(image) {
 
 <template>
   <div class="chat-page">
-    <header class="chat-header">
-      <div class="brand"><span class="logo">💬</span>聊天室</div>
-      <div class="header-right">
-        <span class="conn" :class="connected ? 'on' : 'off'">
-          {{ connected ? '已连接' : '连接中…' }}
-        </span>
-        <span v-if="isAdmin" class="role-chip">管理员</span>
-        <button v-if="isSuperAdmin" class="btn-manage" @click="aiSettingsOpen = true">AI 设置</button>
-        <button v-if="isAdmin" class="btn-manage" @click="adminOpen = true">用户管理</button>
-        <button class="profile-trigger" title="打开个人主页" @click="profileOpen = true">
-          <UserAvatar :user="me" />
-          <span>{{ me.displayName }}</span>
-        </button>
-        <button class="btn-ghost" @click="logout">退出</button>
-      </div>
-    </header>
+    <div class="chat-header-glass glass-panel">
+      <SpotlightCard class="chat-header-spotlight">
+        <header class="chat-header">
+          <div class="brand"><span class="logo">💬</span>聊天室</div>
+          <div class="header-right">
+            <span class="conn" :class="connected ? 'on' : 'off'">
+              {{ connected ? '已连接' : '连接中…' }}
+            </span>
+            <span v-if="isAdmin" class="role-chip">管理员</span>
+            <button v-if="isSuperAdmin" class="btn-manage" @click="aiSettingsOpen = true">AI 设置</button>
+            <button v-if="isAdmin" class="btn-manage" @click="adminOpen = true">用户管理</button>
+            <button class="profile-trigger" title="打开个人主页" @click="profileOpen = true">
+              <UserAvatar :user="me" />
+              <span>{{ me.displayName }}</span>
+            </button>
+            <button class="btn-ghost" @click="logout">退出</button>
+          </div>
+        </header>
+      </SpotlightCard>
+    </div>
 
     <div v-if="!connected" class="reconnect-banner">
       实时连接已断开，正在自动重连…
@@ -325,28 +330,32 @@ function imageUrl(image) {
     </div>
 
     <div class="chat-body">
-      <aside class="sidebar">
-        <div class="side-title">
-          在线用户 <span class="count">{{ onlineCount }}</span>
-        </div>
-        <ul>
-          <li v-for="u in users" :key="u.username">
-            <UserAvatar :user="u" :class="{ self: u.username === me.username }" />
-            <span class="name">
-              {{ u.displayName }}<i v-if="u.username === me.username">（我）</i>
-              <i v-if="u.role === 'ADMIN'">（管理员）</i>
-              <i v-if="isUserMuted(u)">（已禁言）</i>
-            </span>
-            <button
-              v-if="isAdmin && u.username !== me.username"
-              class="user-action"
-              @click="muteUser(u)"
-            >
-              {{ isUserMuted(u) ? '解禁' : '禁言' }}
-            </button>
-          </li>
-        </ul>
-      </aside>
+      <div class="sidebar-glass glass-panel">
+        <SpotlightCard class="sidebar-spotlight" spotlight-color="rgba(255, 255, 255, 0.4)">
+          <aside class="sidebar">
+            <div class="side-title">
+              在线用户 <span class="count">{{ onlineCount }}</span>
+            </div>
+            <ul>
+              <li v-for="u in users" :key="u.username">
+                <UserAvatar :user="u" :class="{ self: u.username === me.username }" />
+                <span class="name">
+                  {{ u.displayName }}<i v-if="u.username === me.username">（我）</i>
+                  <i v-if="u.role === 'ADMIN'">（管理员）</i>
+                  <i v-if="isUserMuted(u)">（已禁言）</i>
+                </span>
+                <button
+                  v-if="isAdmin && u.username !== me.username"
+                  class="user-action"
+                  @click="muteUser(u)"
+                >
+                  {{ isUserMuted(u) ? '解禁' : '禁言' }}
+                </button>
+              </li>
+            </ul>
+          </aside>
+        </SpotlightCard>
+      </div>
 
       <main class="chat-main">
         <div ref="listEl" class="msg-list">
@@ -378,48 +387,52 @@ function imageUrl(image) {
           </div>
         </div>
 
-        <footer class="composer">
-          <p v-if="sendError" class="send-error">{{ sendError }}</p>
-          <div class="composer-row">
-            <input
-              ref="imageInput"
-              class="visually-hidden"
-              type="file"
-              accept="image/png,image/jpeg,image/gif,image/webp"
-              @change="imageSelected"
-            />
-            <button
-              class="btn-image"
-              :disabled="!connected || sending || isMuted"
-              @click="chooseImage"
-            >
-              {{ sending ? '发送中…' : '图片' }}
-            </button>
-            <button
-              class="btn-ai"
-              title="在消息开头使用 @AI 提问"
-              :disabled="!connected || sending || isMuted"
-              @click="prepareAiPrompt"
-            >
-              @AI
-            </button>
-            <input
-              ref="messageInput"
-              v-model="draft"
-              maxlength="500"
-              :placeholder="isMuted ? '禁言期间不能发送消息' : '输入消息，或 @AI 提问…'"
-              :disabled="!connected || isMuted"
-              @keyup.enter="send"
-            />
-            <button
-              class="btn-send"
-              :disabled="!connected || sending || isMuted || !draft.trim()"
-              @click="send"
-            >
-              发送
-            </button>
-          </div>
-        </footer>
+        <div class="composer-glass glass-panel">
+          <SpotlightCard class="composer-spotlight" spotlight-color="rgba(255, 255, 255, 0.46)">
+            <footer class="composer">
+              <p v-if="sendError" class="send-error">{{ sendError }}</p>
+              <div class="composer-row">
+                <input
+                  ref="imageInput"
+                  class="visually-hidden"
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  @change="imageSelected"
+                />
+                <button
+                  class="btn-image"
+                  :disabled="!connected || sending || isMuted"
+                  @click="chooseImage"
+                >
+                  {{ sending ? '发送中…' : '图片' }}
+                </button>
+                <button
+                  class="btn-ai"
+                  title="在消息开头使用 @AI 提问"
+                  :disabled="!connected || sending || isMuted"
+                  @click="prepareAiPrompt"
+                >
+                  @AI
+                </button>
+                <input
+                  ref="messageInput"
+                  v-model="draft"
+                  maxlength="500"
+                  :placeholder="isMuted ? '禁言期间不能发送消息' : '输入消息，或 @AI 提问…'"
+                  :disabled="!connected || isMuted"
+                  @keyup.enter="send"
+                />
+                <button
+                  class="btn-send"
+                  :disabled="!connected || sending || isMuted || !draft.trim()"
+                  @click="send"
+                >
+                  发送
+                </button>
+              </div>
+            </footer>
+          </SpotlightCard>
+        </div>
       </main>
     </div>
 

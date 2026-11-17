@@ -1,5 +1,6 @@
 <script setup>
 import { ref } from 'vue'
+import SpotlightCard from './SpotlightCard.vue'
 
 const props = defineProps({
   login: { type: Function, required: true },
@@ -68,49 +69,54 @@ async function submit() {
 
 <template>
   <div class="login-page">
-    <form class="login-card" @submit.prevent="submit">
-      <div class="login-logo">💬</div>
-      <h1>聊天室</h1>
+    <div class="login-glass glass-panel">
+      <SpotlightCard class="login-spotlight" spotlight-color="rgba(255, 255, 255, 0.58)">
+        <form class="login-card" @submit.prevent="submit">
+          <div class="login-logo">💬</div>
+          <h1>聊天室</h1>
+          <p class="login-subtitle">和在线的伙伴打个招呼</p>
 
-      <div class="auth-tabs" role="tablist" aria-label="账户操作">
-        <button type="button" :class="{ active: mode === 'login' }" @click="switchMode('login')">登录</button>
-        <button type="button" :class="{ active: mode === 'register' }" @click="switchMode('register')">注册</button>
-      </div>
+          <div class="auth-tabs" role="tablist" aria-label="账户操作">
+            <button type="button" :class="{ active: mode === 'login' }" @click="switchMode('login')">登录</button>
+            <button type="button" :class="{ active: mode === 'register' }" @click="switchMode('register')">注册</button>
+          </div>
 
-      <div class="auth-fields">
-        <input v-model="username" maxlength="20" placeholder="用户名" autocomplete="username" autofocus />
-        <input
-          v-if="mode === 'register'"
-          v-model="displayName"
-          maxlength="20"
-          placeholder="聊天室显示名称"
-          autocomplete="nickname"
-        />
-        <input
-          v-model="password"
-          type="password"
-          maxlength="128"
-          :placeholder="mode === 'login' ? '密码' : '密码（8~128 个字符）'"
-          :autocomplete="mode === 'login' ? 'current-password' : 'new-password'"
-        />
-        <input
-          v-if="mode === 'register'"
-          v-model="confirmPassword"
-          type="password"
-          maxlength="128"
-          placeholder="确认密码"
-          autocomplete="new-password"
-        />
-        <button type="submit" :disabled="loading">
-          {{ loading ? '处理中…' : mode === 'login' ? '进入聊天室' : '创建账户' }}
-        </button>
-      </div>
+          <div class="auth-fields">
+            <input v-model="username" maxlength="20" placeholder="用户名" autocomplete="username" autofocus />
+            <input
+              v-if="mode === 'register'"
+              v-model="displayName"
+              maxlength="20"
+              placeholder="聊天室显示名称"
+              autocomplete="nickname"
+            />
+            <input
+              v-model="password"
+              type="password"
+              maxlength="128"
+              :placeholder="mode === 'login' ? '密码' : '密码（8~128 个字符）'"
+              :autocomplete="mode === 'login' ? 'current-password' : 'new-password'"
+            />
+            <input
+              v-if="mode === 'register'"
+              v-model="confirmPassword"
+              type="password"
+              maxlength="128"
+              placeholder="确认密码"
+              autocomplete="new-password"
+            />
+            <button type="submit" :disabled="loading">
+              {{ loading ? '处理中…' : mode === 'login' ? '进入聊天室' : '创建账户' }}
+            </button>
+          </div>
 
-      <p v-if="error" class="form-error">{{ error }}</p>
-      <p v-else-if="success" class="form-success">{{ success }}</p>
-      <p class="login-hint">
-        {{ mode === 'login' ? '使用已注册账户进入聊天室' : '用户名与显示名称均为 2~20 个字符' }}
-      </p>
-    </form>
+          <p v-if="error" class="form-error">{{ error }}</p>
+          <p v-else-if="success" class="form-success">{{ success }}</p>
+          <p class="login-hint">
+            {{ mode === 'login' ? '使用已注册账户进入聊天室' : '用户名与显示名称均为 2~20 个字符' }}
+          </p>
+        </form>
+      </SpotlightCard>
+    </div>
   </div>
 </template>

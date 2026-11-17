@@ -1,5 +1,6 @@
 <script setup>
 import { onMounted, ref } from 'vue'
+import AmbientBackground from './components/AmbientBackground.vue'
 import LoginView from './components/LoginView.vue'
 import ChatView from './components/ChatView.vue'
 
@@ -51,7 +52,12 @@ function handleAccountUpdated(account) {
 </script>
 
 <template>
-  <div v-if="checking" class="boot">正在进入聊天室…</div>
-  <LoginView v-else-if="!me" :login="handleLogin" :register="handleRegister" />
-  <ChatView v-else :me="me" @logout="handleLogout" @account-updated="handleAccountUpdated" />
+  <div class="app-shell">
+    <AmbientBackground />
+    <Transition name="view-switch" mode="out-in">
+      <div v-if="checking" key="boot" class="boot">正在进入聊天室…</div>
+      <LoginView v-else-if="!me" key="login" :login="handleLogin" :register="handleRegister" />
+      <ChatView v-else key="chat" :me="me" @logout="handleLogout" @account-updated="handleAccountUpdated" />
+    </Transition>
+  </div>
 </template>

@@ -22,7 +22,7 @@
 body {
   margin: 0;
   color: var(--text);
-  background: var(--bg);
+  background: #edf1fb;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -40,45 +40,200 @@ textarea {
   font: inherit;
 }
 
+/* ---------- 全局背景与玻璃材质 ---------- */
+
+.app-shell {
+  position: relative;
+  min-height: 100vh;
+}
+
+.ambient-background {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 16% 12%, rgba(255, 255, 255, 0.9), transparent 30%),
+    linear-gradient(145deg, #e9efff 0%, #f4efff 46%, #e8f8f5 100%);
+}
+
+.ambient-blob {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(5px);
+  opacity: 0.82;
+  will-change: transform;
+}
+
+.ambient-blob-one {
+  width: 320px;
+  height: 320px;
+  left: -70px;
+  top: 90px;
+  background: radial-gradient(circle at 35% 30%, #a8c4ff, #7794fb 65%, rgba(119, 148, 251, 0));
+  animation: ambient-drift-one 12s ease-in-out infinite alternate;
+}
+
+.ambient-blob-two {
+  width: 360px;
+  height: 360px;
+  right: -90px;
+  top: -80px;
+  background: radial-gradient(circle at 40% 40%, #ddc5ff, #ab8bee 62%, rgba(171, 139, 238, 0));
+  animation: ambient-drift-two 15s ease-in-out infinite alternate;
+}
+
+.ambient-blob-three {
+  width: 290px;
+  height: 290px;
+  right: 12%;
+  bottom: -100px;
+  background: radial-gradient(circle at 40% 35%, #bcf5df, #71d4c5 62%, rgba(113, 212, 197, 0));
+  animation: ambient-drift-three 14s ease-in-out infinite alternate;
+}
+
+.ambient-blob-four {
+  width: 180px;
+  height: 180px;
+  left: 44%;
+  bottom: 4%;
+  background: radial-gradient(circle at 40% 35%, #ffe9be, #ffbf92 62%, rgba(255, 191, 146, 0));
+  opacity: 0.58;
+  animation: ambient-drift-two 13s ease-in-out infinite alternate-reverse;
+}
+
+.ambient-ring {
+  position: absolute;
+  width: 210px;
+  height: 210px;
+  right: 17%;
+  top: 30%;
+  border: 22px solid rgba(255, 255, 255, 0.36);
+  border-radius: 50%;
+  box-shadow: inset 0 0 30px rgba(255, 255, 255, 0.36);
+}
+
+.glass-panel {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.48), rgba(255, 255, 255, 0.2));
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    inset 1px 0 0 rgba(255, 255, 255, 0.36),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.18),
+    0 16px 44px rgba(42, 54, 105, 0.14);
+}
+
+.glass-panel::after {
+  content: "";
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  top: 0;
+  z-index: 2;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.96), transparent);
+  pointer-events: none;
+}
+
+.spotlight-card {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+.spotlight-card-light {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.spotlight-card-content {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+}
+
+.view-switch-enter-active,
+.view-switch-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.view-switch-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.view-switch-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  @supports not (-webkit-backdrop-filter: blur(1px)) {
+    .glass-panel {
+      background: rgba(255, 255, 255, 0.94);
+    }
+  }
+}
+
 /* ---------- 登录页 ---------- */
 
 .login-page {
+  position: relative;
+  z-index: 1;
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  background:
-    radial-gradient(1000px 500px at 15% -10%, rgba(79, 109, 245, 0.16), transparent 60%),
-    radial-gradient(800px 400px at 110% 110%, rgba(79, 109, 245, 0.12), transparent 60%),
-    var(--bg);
   padding: 24px;
+}
+
+.login-glass {
+  width: 100%;
+  max-width: 390px;
+  border-radius: 22px;
 }
 
 .login-card {
   width: 100%;
-  max-width: 400px;
-  background: var(--card);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
-  padding: 40px 36px 32px;
+  padding: 32px;
   text-align: center;
 }
 
 .login-logo {
-  width: 64px;
-  height: 64px;
-  margin: 0 auto 18px;
-  border-radius: 20px;
-  background: linear-gradient(135deg, var(--primary), #7b8cff);
+  width: 58px;
+  height: 58px;
+  margin: 0 auto 16px;
+  border-radius: 18px;
+  background: linear-gradient(145deg, #7188ff, var(--primary));
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 30px;
+  font-size: 27px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42), 0 10px 24px rgba(79, 109, 245, 0.24);
 }
 
 .login-card h1 {
-  margin: 0 0 6px;
+  margin: 0;
   font-size: 24px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.login-subtitle {
+  margin: 7px 0 22px;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .auth-tabs {
@@ -88,7 +243,8 @@ textarea {
   padding: 4px;
   margin-bottom: 16px;
   border-radius: var(--radius-md);
-  background: var(--primary-soft);
+  background: rgba(236, 239, 254, 0.7);
+  box-shadow: inset 0 1px 3px rgba(64, 76, 125, 0.06);
 }
 
 .auth-tabs button {
@@ -101,8 +257,8 @@ textarea {
 .auth-tabs button.active {
   color: var(--primary-dark);
   font-weight: 600;
-  background: var(--card);
-  box-shadow: 0 1px 4px rgba(31, 41, 72, 0.10);
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 2px 8px rgba(48, 61, 111, 0.1), inset 0 1px 0 #fff;
 }
 
 .auth-fields {
@@ -114,28 +270,34 @@ textarea {
   width: 100%;
   height: 46px;
   padding: 0 14px;
-  border: 1.5px solid var(--line);
+  border: 1px solid rgba(255, 255, 255, 0.76);
   border-radius: var(--radius-md);
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  background: rgba(255, 255, 255, 0.5);
+  box-shadow: inset 0 1px 3px rgba(57, 68, 112, 0.04);
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
 
 .auth-fields input:focus {
   border-color: var(--primary);
+  background: rgba(255, 255, 255, 0.74);
   box-shadow: 0 0 0 3px rgba(79, 109, 245, 0.15);
 }
 
 .auth-fields button[type="submit"] {
   min-height: 46px;
   border-radius: var(--radius-md);
-  background: var(--primary);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: linear-gradient(135deg, #687ff7, var(--primary));
   color: #fff;
   font-weight: 600;
-  transition: background 0.15s;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 8px 18px rgba(79, 109, 245, 0.22);
+  transition: transform 0.15s, box-shadow 0.15s;
 }
 
 .auth-fields button[type="submit"]:hover:not(:disabled) {
-  background: var(--primary-dark);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 11px 24px rgba(79, 109, 245, 0.28);
 }
 
 .auth-fields button:disabled {
@@ -155,13 +317,16 @@ textarea {
 .form-success { color: #168253; }
 
 .login-hint {
-  margin: 6px 0 0;
+  min-height: 18px;
+  margin: 13px 0 0;
   color: var(--muted);
   font-size: 12px;
-  text-align: left;
+  text-align: center;
 }
 
 .boot {
+  position: relative;
+  z-index: 1;
   min-height: 100vh;
   display: flex;
   align-items: center;
@@ -172,37 +337,42 @@ textarea {
 /* ---------- 聊天室 ---------- */
 
 .chat-page {
+  position: relative;
+  z-index: 1;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   max-width: 1180px;
   margin: 0 auto;
-  padding: 18px;
+  padding: 20px;
+}
+
+.chat-header-glass {
+  flex-shrink: 0;
+  border-radius: var(--radius-lg);
 }
 
 .chat-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 12px 20px;
-  box-shadow: var(--shadow);
+  min-height: 62px;
+  padding: 10px 16px;
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-weight: 700;
-  font-size: 17px;
+  font-weight: 500;
+  font-size: 16px;
 }
 
 .brand .logo {
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
   background: linear-gradient(135deg, var(--primary), #7b8cff);
   display: flex;
   align-items: center;
@@ -297,25 +467,28 @@ textarea {
   flex: 1;
   min-height: 0;
   display: flex;
-  gap: 18px;
-  margin-top: 18px;
+  gap: 15px;
+  margin-top: 15px;
+}
+
+.sidebar-glass {
+  width: 205px;
+  flex-shrink: 0;
+  min-height: 0;
+  border-radius: var(--radius-lg);
 }
 
 .sidebar {
-  width: 230px;
-  flex-shrink: 0;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
-  padding: 18px 14px;
+  width: 100%;
+  height: 100%;
+  padding: 16px 12px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
 .side-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--muted);
   letter-spacing: 0.05em;
@@ -327,7 +500,7 @@ textarea {
 }
 
 .side-title .count {
-  background: var(--primary-soft);
+  background: rgba(255, 255, 255, 0.48);
   color: var(--primary-dark);
   border-radius: 999px;
   padding: 2px 9px;
@@ -351,7 +524,7 @@ textarea {
 }
 
 .sidebar li:hover {
-  background: #f5f7fc;
+  background: rgba(255, 255, 255, 0.3);
 }
 
 .avatar {
@@ -443,22 +616,24 @@ textarea {
 .chat-main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
-  overflow: hidden;
+  gap: 12px;
 }
 
 .msg-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 22px 24px;
+  padding: 18px 20px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.74);
+  border-radius: var(--radius-lg);
+  background: rgba(251, 252, 255, 0.88);
+  box-shadow: 0 12px 36px rgba(48, 61, 111, 0.09), inset 0 1px 0 #fff;
 }
 
 .msg.sys {
@@ -469,13 +644,14 @@ textarea {
   display: inline-block;
   background: #f1f3f9;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
   padding: 4px 14px;
   border-radius: 999px;
 }
 
 .msg {
   max-width: 72%;
+  animation: message-enter 0.22s ease both;
 }
 
 .msg.own {
@@ -488,7 +664,7 @@ textarea {
 }
 
 .meta {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted);
   margin-bottom: 4px;
   display: flex;
@@ -506,9 +682,9 @@ textarea {
 
 .bubble {
   display: inline-block;
-  padding: 10px 14px;
+  padding: 9px 13px;
   border-radius: 14px;
-  font-size: 14.5px;
+  font-size: 13px;
   line-height: 1.55;
   text-align: left;
   word-break: break-word;
@@ -522,9 +698,10 @@ textarea {
 }
 
 .msg.own .bubble {
-  background: var(--primary);
+  background: linear-gradient(135deg, #687ff7, var(--primary));
   color: #fff;
   border-top-right-radius: 4px;
+  box-shadow: 0 6px 16px rgba(79, 109, 245, 0.16);
 }
 
 .msg.ai .meta .who {
@@ -569,8 +746,12 @@ textarea {
 }
 
 .composer {
-  border-top: 1px solid var(--line);
-  padding: 14px 18px;
+  padding: 10px;
+}
+
+.composer-glass {
+  flex-shrink: 0;
+  border-radius: 19px;
 }
 
 .send-error {
@@ -586,16 +767,20 @@ textarea {
 
 .composer-row input {
   flex: 1;
+  min-width: 0;
   height: 46px;
   padding: 0 16px;
-  border: 1.5px solid var(--line);
+  border: 1px solid rgba(255, 255, 255, 0.76);
   border-radius: var(--radius-md);
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  background: rgba(255, 255, 255, 0.56);
+  box-shadow: inset 0 1px 3px rgba(57, 68, 112, 0.04);
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
 
 .composer-row input:focus {
   border-color: var(--primary);
+  background: rgba(255, 255, 255, 0.78);
   box-shadow: 0 0 0 3px rgba(79, 109, 245, 0.15);
 }
 
@@ -607,9 +792,9 @@ textarea {
 .btn-image,
 .btn-ai {
   min-width: 64px;
-  border: 1.5px solid var(--line);
+  border: 1px solid rgba(255, 255, 255, 0.7);
   border-radius: var(--radius-md);
-  background: var(--card);
+  background: rgba(255, 255, 255, 0.5);
   color: var(--primary-dark);
   font-weight: 600;
 }
@@ -629,14 +814,17 @@ textarea {
 .btn-send {
   min-width: 86px;
   border-radius: var(--radius-md);
-  background: var(--primary);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: linear-gradient(135deg, #687ff7, var(--primary));
   color: #fff;
   font-weight: 600;
-  transition: background 0.15s;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 8px 18px rgba(79, 109, 245, 0.2);
+  transition: transform 0.15s, box-shadow 0.15s;
 }
 
 .btn-send:hover:not(:disabled) {
-  background: var(--primary-dark);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 11px 24px rgba(79, 109, 245, 0.26);
 }
 
 .btn-send:disabled {
@@ -994,11 +1182,54 @@ textarea {
   text-align: center;
 }
 
+@keyframes ambient-drift-one {
+  from { transform: translate3d(-10px, -8px, 0) scale(0.96); }
+  to { transform: translate3d(70px, 45px, 0) scale(1.08); }
+}
+
+@keyframes ambient-drift-two {
+  from { transform: translate3d(0, 0, 0) rotate(0deg); }
+  to { transform: translate3d(-55px, 65px, 0) rotate(12deg); }
+}
+
+@keyframes ambient-drift-three {
+  from { transform: translate3d(0, 15px, 0) scale(1); }
+  to { transform: translate3d(-65px, -30px, 0) scale(1.12); }
+}
+
+@keyframes message-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient-blob {
+    animation: none;
+    will-change: auto;
+  }
+
+  .spotlight-card-light,
+  .view-switch-enter-active,
+  .view-switch-leave-active,
+  .msg,
+  .auth-fields button[type="submit"],
+  .btn-send {
+    animation: none;
+    transition: none;
+  }
+}
+
 @media (max-width: 720px) {
   .chat-page {
-    padding: 10px;
+    padding: 12px;
   }
-  .sidebar {
+  .sidebar-glass {
     display: none;
   }
   .chat-header {
@@ -1031,5 +1262,48 @@ textarea {
   .account-actions {
     width: 100%;
     justify-content: flex-end;
+  }
+}
+
+@media (max-width: 520px) {
+  .login-page {
+    padding: 16px;
+  }
+
+  .login-card {
+    padding: 24px 20px;
+  }
+
+  .composer {
+    padding: 8px;
+  }
+
+  .composer-row {
+    gap: 6px;
+  }
+
+  .composer-row input {
+    padding: 0 10px;
+  }
+
+  .btn-image,
+  .btn-ai {
+    min-width: 50px;
+  }
+
+  .btn-send {
+    min-width: 62px;
+  }
+
+  .msg-list {
+    padding: 15px 12px;
+  }
+
+  .msg {
+    max-width: 86%;
+  }
+
+  .ambient-ring {
+    right: -70px;
   }
 }
