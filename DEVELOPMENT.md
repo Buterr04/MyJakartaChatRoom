@@ -171,6 +171,7 @@ site.buterr.chatroom
 │   ├── LoginServlet         # POST /api/login（密码认证）
 │   ├── MeServlet            # GET  /api/me
 │   ├── AvatarServlet        # PUT  /api/me/avatar
+│   ├── PasswordServlet      # PUT  /api/me/password（校验旧密码后更新密码哈希）
 │   ├── LogoutServlet        # POST /api/logout
 │   ├── UsersServlet         # GET  /api/users
 │   ├── MessagesServlet      # GET/POST /api/messages
@@ -413,6 +414,7 @@ public void sessionDestroyed(HttpSessionEvent se) {
 | POST | `/api/login` | `{"username":"alice","password":"..."}` | `200` 在线用户资料（含 `role`、`mutedUntil`） + Set-Cookie | `400` 缺少字段；`401` 凭据错误；`409` 已在线 |
 | GET | `/api/me` | — | `200` 最新账户公开资料（含角色与禁言状态） | `401` |
 | PUT | `/api/me/avatar` | `{"avatar":"data:image/png;base64,..."}`，null/空串恢复默认 | `200` 最新账户资料 | `400` 图片格式或大小错误；`401` |
+| PUT | `/api/me/password` | `{"currentPassword":"...","newPassword":"..."}`，新密码长度 8~128 个字符 | `200` `{"ok":true}`，当前会话保持有效 | `400` 当前密码错误或新密码格式不合法；`401` |
 | POST | `/api/logout` | — | `200` `{"ok":true}`（并触发离场广播） | — |
 | GET | `/api/users` | — | `200` `{"count":2,"users":[User...]}`（按登录时间排序） | `401` |
 | GET | `/api/messages?after={id}` | — | `200` `{"messages":[Message...]}`；`after>0` 时只返回 id 更大的增量 | `401` |
@@ -481,6 +483,8 @@ frontend/
     └── components/
         ├── LoginView.vue    # 登录卡片（props: login 函数）
         ├── AiSettingsDialog.vue # Admin 专用 AI 配置表单与连接测试
+        ├── ProfileDialog.vue # 个人资料与头像入口
+        ├── PasswordDialog.vue # 独立修改密码弹窗
         └── ChatView.vue     # 聊天主界面 + WS 客户端全部逻辑
 ```
 
@@ -558,10 +562,10 @@ ws.onclose = (event) => {
 ### 8.1 单元测试（后端核心逻辑）
 
 ```bash
-mvn test        # ChatRoomTest 10 + ChatRepositoryTest 9 + ImageStorageTest 2 + AiAssistantServiceTest 4
+mvn test        # ChatRoomTest 10 + ChatRepositoryTest 10 + ImageStorageTest 2 + AiAssistantServiceTest 4
 ```
 
-覆盖：登录产生系统消息、重名拒绝、敏感词替换、历史上限、禁言/解禁、角色/头像同步、消息删除、图片跨重启恢复与文件清理；SQLite 测试覆盖账户、角色、头像、图片元数据、AI 配置与密钥序列化脱敏、旧库无损迁移和持久历史上限；`ImageStorageTest` 验证图片签名、文件读写删除及伪造图片拒绝。`AiAssistantServiceTest` 使用 JDK 本地 `HttpServer` 模拟上游，不访问真实 AI 服务，验证请求 JSON、Bearer 认证、异步回复持久化、禁用状态和错误脱敏。
+覆盖：登录产生系统消息、重名拒绝、敏感词替换、历史上限、禁言/解禁、角色/头像同步、消息删除、图片跨重启恢复与文件清理；SQLite 测试覆盖账户、角色、头像、密码修改与旧密码校验、图片元数据、AI 配置与密钥序列化脱敏、旧库无损迁移和持久历史上限；`ImageStorageTest` 验证图片签名、文件读写删除及伪造图片拒绝。`AiAssistantServiceTest` 使用 JDK 本地 `HttpServer` 模拟上游，不访问真实 AI 服务，验证请求 JSON、Bearer 认证、异步回复持久化、禁用状态和错误脱敏。
 
 ### 8.2 REST 冒烟（curl，见第 5 节示例）
 

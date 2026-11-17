@@ -114,6 +114,22 @@ class ChatRepositoryTest {
     }
 
     @Test
+    void passwordChangeRequiresCurrentPasswordAndPersists() {
+        Path database = temporaryDirectory.resolve("passwords.db");
+        ChatRepository repository = new ChatRepository(database);
+        repository.register("alice", "Alice", "correct-password");
+
+        assertFalse(repository.changePassword("alice", "wrong-password", "new-password"));
+        assertTrue(repository.authenticate("alice", "correct-password").isPresent());
+        assertTrue(repository.changePassword("ALICE", "correct-password", "new-password"));
+
+        ChatRepository reopened = new ChatRepository(database);
+        assertTrue(reopened.authenticate("alice", "new-password").isPresent());
+        assertTrue(reopened.authenticate("alice", "correct-password").isEmpty());
+        assertFalse(reopened.changePassword("missing", "correct-password", "new-password"));
+    }
+
+    @Test
     void deleteRemovesChatMessagesButNotSystemMessages() {
         Path database = temporaryDirectory.resolve("chat.db");
         ChatRepository repository = new ChatRepository(database);

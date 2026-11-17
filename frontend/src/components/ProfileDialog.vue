@@ -5,16 +5,16 @@ import UserAvatar from './UserAvatar.vue'
 const props = defineProps({
   me: { type: Object, required: true },
 })
-const emit = defineEmits(['close', 'updated'])
+const emit = defineEmits(['close', 'updated', 'change-password'])
 
 const fileInput = ref(null)
 const saving = ref(false)
-const error = ref('')
-const success = ref('')
+const avatarError = ref('')
+const avatarSuccess = ref('')
 
 function chooseAvatar() {
-  error.value = ''
-  success.value = ''
+  avatarError.value = ''
+  avatarSuccess.value = ''
   fileInput.value?.click()
 }
 
@@ -23,24 +23,24 @@ async function avatarSelected(event) {
   event.target.value = ''
   if (!file) return
   if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(file.type)) {
-    error.value = '请选择 PNG、JPEG、GIF 或 WebP 图片'
+    avatarError.value = '请选择 PNG、JPEG、GIF 或 WebP 图片'
     return
   }
   if (file.size > 1024 * 1024) {
-    error.value = '头像文件不能超过 1MB'
+    avatarError.value = '头像文件不能超过 1MB'
     return
   }
   const reader = new FileReader()
   reader.onload = () => saveAvatar(reader.result)
-  reader.onerror = () => { error.value = '读取图片失败，请重新选择' }
+  reader.onerror = () => { avatarError.value = '读取图片失败，请重新选择' }
   reader.readAsDataURL(file)
 }
 
 async function saveAvatar(avatar) {
   if (saving.value) return
   saving.value = true
-  error.value = ''
-  success.value = ''
+  avatarError.value = ''
+  avatarSuccess.value = ''
   try {
     const res = await fetch('/api/me/avatar', {
       method: 'PUT',
@@ -49,13 +49,13 @@ async function saveAvatar(avatar) {
     })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
-      error.value = data.error || '头像保存失败，请稍后再试'
+      avatarError.value = data.error || '头像保存失败，请稍后再试'
       return
     }
     emit('updated', data)
-    success.value = avatar ? '头像已更新' : '已恢复默认头像'
+    avatarSuccess.value = avatar ? '头像已更新' : '已恢复默认头像'
   } catch {
-    error.value = '网络异常，请稍后再试'
+    avatarError.value = '网络异常，请稍后再试'
   } finally {
     saving.value = false
   }
@@ -67,7 +67,7 @@ async function saveAvatar(avatar) {
     <section class="dialog profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-title">
       <button class="dialog-close" aria-label="关闭" @click="emit('close')">×</button>
       <h2 id="profile-title">个人主页</h2>
-      <p class="dialog-subtitle">查看账户资料并设置你的聊天头像</p>
+      <p class="dialog-subtitle">查看账户资料、设置头像并修改登录密码</p>
 
       <div class="profile-summary">
         <UserAvatar :user="me" class="profile-avatar" />
@@ -99,8 +99,16 @@ async function saveAvatar(avatar) {
         </button>
         <p>支持 PNG、JPEG、GIF、WebP，文件不超过 1MB。</p>
       </div>
-      <p v-if="error" class="form-error">{{ error }}</p>
-      <p v-else-if="success" class="form-success">{{ success }}</p>
+      <p v-if="avatarError" class="form-error">{{ avatarError }}</p>
+      <p v-else-if="avatarSuccess" class="form-success">{{ avatarSuccess }}</p>
+
+      <div class="profile-security">
+        <div>
+          <h3>账户安全</h3>
+          <p>验证当前密码后，可设置新的登录密码。</p>
+        </div>
+        <button class="btn-secondary" @click="emit('change-password')">修改密码</button>
+      </div>
     </section>
   </div>
 </template>

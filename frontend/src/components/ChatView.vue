@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import AdminUsersDialog from './AdminUsersDialog.vue'
 import AiSettingsDialog from './AiSettingsDialog.vue'
+import PasswordDialog from './PasswordDialog.vue'
 import ProfileDialog from './ProfileDialog.vue'
 import SpotlightCard from './SpotlightCard.vue'
 import UserAvatar from './UserAvatar.vue'
@@ -21,6 +22,7 @@ const sending = ref(false)
 const sendError = ref('')
 const actionError = ref('')
 const profileOpen = ref(false)
+const passwordOpen = ref(false)
 const adminOpen = ref(false)
 const aiSettingsOpen = ref(false)
 const accountRevision = ref(0)
@@ -289,6 +291,11 @@ function isOwn(message) {
   return message.username === props.me.username
 }
 
+function openPasswordDialog() {
+  profileOpen.value = false
+  passwordOpen.value = true
+}
+
 function isAi(message) {
   return !message.username && message.displayName === 'AI助手'
 }
@@ -441,7 +448,9 @@ function imageUrl(image) {
       :me="me"
       @close="profileOpen = false"
       @updated="applyAccount"
+      @change-password="openPasswordDialog"
     />
+    <PasswordDialog v-if="passwordOpen" @close="passwordOpen = false" />
     <AdminUsersDialog
       v-if="adminOpen"
       :me="me"

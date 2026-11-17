@@ -120,6 +120,44 @@ public final class ChatRepository {
         }
     }
 
+    public boolean changePassword(String username, String currentPassword, String newPassword) {
+        String selectSql = """
+                SELECT password_hash
+                FROM accounts WHERE username = ? COLLATE NOCASE
+                """;
+        String updateSql = "UPDATE accounts SET password_hash = ? WHERE username = ? COLLATE NOCASE";
+        try (Connection connection = connect()) {
+            connection.setAutoCommit(false);
+            try {
+                try (PreparedStatement statement = connection.prepareStatement(selectSql)) {
+                    statement.setString(1, username);
+                    try (ResultSet result = statement.executeQuery()) {
+                        if (!result.next()
+                                || !PasswordHasher.matches(currentPassword, result.getString("password_hash"))) {
+                            connection.rollback();
+                            return false;
+                        }
+                    }
+                }
+                try (PreparedStatement statement = connection.prepareStatement(updateSql)) {
+                    statement.setString(1, PasswordHasher.hash(newPassword));
+                    statement.setString(2, username);
+                    if (statement.executeUpdate() == 0) {
+                        connection.rollback();
+                        return false;
+                    }
+                }
+                connection.commit();
+                return true;
+            } catch (SQLException e) {
+                connection.rollback();
+                throw e;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法更新密码", e);
+        }
+    }
+
     public Optional<Account> setMutedUntil(String username, long mutedUntil) {
         if (mutedUntil < 0) {
             throw new IllegalArgumentException("禁言截止时间不能为负数");

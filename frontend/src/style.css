@@ -951,6 +951,75 @@ textarea {
   font-size: 12px;
 }
 
+.profile-security {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 20px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: #fafbff;
+}
+
+.profile-security h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.profile-security p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.password-dialog {
+  max-width: 440px;
+}
+
+.password-form {
+  display: grid;
+  gap: 13px;
+}
+
+.password-form label {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.password-form input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  outline: none;
+  background: #fff;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.password-form input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(79, 109, 245, 0.15);
+}
+
+.password-form .form-error,
+.password-form .form-success {
+  margin: 0;
+}
+
+.password-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 3px;
+}
+
 .btn-primary,
 .btn-secondary {
   padding: 8px 14px;
