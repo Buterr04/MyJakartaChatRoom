@@ -12,6 +12,8 @@ import jakarta.websocket.server.ServerEndpoint;
 
 import site.buterr.chatroom.store.ChatRoom;
 import site.buterr.chatroom.store.ChatRoomHolder;
+import site.buterr.chatroom.store.DuplicateUsernameException;
+import site.buterr.chatroom.model.User;
 
 /**
  * 聊天室 WebSocket 端点：/ws/chat。
@@ -34,12 +36,16 @@ public class ChatEndpoint {
 
     @OnOpen
     public void onOpen(Session session) throws Exception {
-        String username = httpSession == null ? null : (String) httpSession.getAttribute("username");
-        if (username == null) {
+        User user = httpSession == null ? null : (User) httpSession.getAttribute("chatUser");
+        if (user == null) {
             session.close(new CloseReason(CloseCodes.VIOLATED_POLICY, "未登录"));
             return;
         }
-        ChatRoomHolder.get().bindWs(httpSession.getId(), session);
+        try {
+            ChatRoomHolder.get().bindWs(user, httpSession.getId(), session);
+        } catch (DuplicateUsernameException e) {
+            session.close(new CloseReason(CloseCodes.VIOLATED_POLICY, "该账户已在其他连接在线"));
+        }
     }
 
     @OnMessage

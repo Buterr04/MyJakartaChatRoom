@@ -14,6 +14,7 @@ import site.buterr.chatroom.model.Message;
 import site.buterr.chatroom.store.AccountMutedException;
 import site.buterr.chatroom.store.ChatRoom;
 import site.buterr.chatroom.store.InvalidImageException;
+import site.buterr.chatroom.store.UserOfflineException;
 import site.buterr.chatroom.util.JsonUtil;
 
 public class ImageMessageServlet extends HttpServlet {
@@ -56,6 +57,8 @@ public class ImageMessageServlet extends HttpServlet {
         } catch (AccountMutedException e) {
             JsonUtil.write(resp, HttpServletResponse.SC_FORBIDDEN,
                     Map.of("error", "账户当前处于禁言状态", "mutedUntil", e.getMutedUntil()));
+        } catch (UserOfflineException e) {
+            JsonUtil.write(resp, HttpServletResponse.SC_CONFLICT, Map.of("error", e.getMessage()));
         }
     }
 }

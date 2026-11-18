@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.lang.reflect.Proxy;
 
 import com.sun.net.httpserver.HttpServer;
 
@@ -20,7 +21,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import jakarta.websocket.Session;
+
+import site.buterr.chatroom.model.Role;
 import site.buterr.chatroom.model.Message;
+import site.buterr.chatroom.model.User;
 import site.buterr.chatroom.store.ChatRepository;
 import site.buterr.chatroom.store.ChatRoom;
 
@@ -74,7 +79,7 @@ class AiAssistantServiceTest {
     @Test
     void mentionCreatesPersistedAssistantReplyWithoutBlockingChatRoom() throws Exception {
         saveSettings(true);
-        chatRoom.login("alice");
+        connect(chatRoom, chatRoom.login("alice"));
         Message question = chatRoom.sendChat("alice", "@AI 你好");
 
         assistant.handleUserMessage(question);
@@ -106,6 +111,7 @@ class AiAssistantServiceTest {
     @Test
     void disabledAssistantDoesNotCallUpstream() throws Exception {
         saveSettings(false);
+        connect(chatRoom, chatRoom.login("alice"));
         Message question = chatRoom.sendChat("alice", "@AI 你好");
 
         assistant.handleUserMessage(question);
@@ -119,6 +125,7 @@ class AiAssistantServiceTest {
         saveSettings(true);
         responseStatus = 401;
         responseBody = "{\"error\":\"test-secret must not leak\"}";
+        connect(chatRoom, chatRoom.login("alice"));
         Message question = chatRoom.sendChat("alice", "@AI 你好");
 
         assistant.handleUserMessage(question);
@@ -132,6 +139,29 @@ class AiAssistantServiceTest {
     private void saveSettings(boolean enabled) {
         repository.saveAiSettings("http://" + server.getAddress().getHostString() + ":"
                 + server.getAddress().getPort() + "/v1", "test-secret", "test-model", enabled, "友善地简洁回答");
+    }
+
+    private static Session webSocket() {
+        return (Session) Proxy.newProxyInstance(Session.class.getClassLoader(), new Class<?>[]{Session.class},
+                (proxy, method, arguments) -> {
+                    if (method.getName().equals("hashCode")) {
+                        return System.identityHashCode(proxy);
+                    }
+                    if (method.getName().equals("equals")) {
+                        return proxy == arguments[0];
+                    }
+                    if (method.getName().equals("toString")) {
+                        return "WebSocket@" + System.identityHashCode(proxy);
+                    }
+                    if (method.getReturnType() == boolean.class) {
+                        return false;
+                    }
+                    return null;
+                });
+    }
+
+    private static void connect(ChatRoom room, User user) {
+        room.bindWs(user, "session-" + user.username(), webSocket());
     }
 
     private Message awaitAssistantReply() throws InterruptedException {

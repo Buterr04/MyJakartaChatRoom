@@ -8,10 +8,13 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import jakarta.websocket.CloseReason;
@@ -33,13 +36,19 @@ public class ChatRoom {
 
     public static final int MAX_HISTORY = 200;
     private static final List<String> SENSITIVE_WORDS = List.of("去死", "傻逼", "笨蛋");
+    /** A brief network interruption must not make a user leave and rejoin. */
+    private static final long OFFLINE_GRACE_PERIOD_MS = 30_000;
 
     private final int maxHistory;
+    private final long offlineGracePeriodMs;
     private final ChatRepository repository;
     private final ImageStorage imageStorage;
     private final Map<String, User> onlineUsers = new ConcurrentHashMap<>();
     private final List<Message> history = new ArrayList<>();
     private final Map<String, Set<Session>> wsByHttpSession = new ConcurrentHashMap<>();
+    private final Map<Session, User> userByWs = new ConcurrentHashMap<>();
+    private final Map<String, String> httpSessionIdByUser = new ConcurrentHashMap<>();
+    private final Map<String, String> pendingOfflineTokens = new ConcurrentHashMap<>();
     private final Map<Session, Queue<String>> outbound = new ConcurrentHashMap<>();
     private final Set<Session> draining = ConcurrentHashMap.newKeySet();
     private final AtomicLong idGen = new AtomicLong(1);
@@ -48,18 +57,33 @@ public class ChatRoom {
         thread.setDaemon(true);
         return thread;
     });
+    private final ScheduledExecutorService presenceScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread thread = new Thread(r, "chat-presence");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     /** In-memory constructor retained for focused domain tests. */
     public ChatRoom(int maxHistory) {
-        this(maxHistory, null, null);
+        this(maxHistory, null, null, OFFLINE_GRACE_PERIOD_MS);
     }
 
     public ChatRoom(int maxHistory, ChatRepository repository) {
-        this(maxHistory, repository, null);
+        this(maxHistory, repository, null, OFFLINE_GRACE_PERIOD_MS);
     }
 
     public ChatRoom(int maxHistory, ChatRepository repository, ImageStorage imageStorage) {
+        this(maxHistory, repository, imageStorage, OFFLINE_GRACE_PERIOD_MS);
+    }
+
+    /** Visible for tests that verify the disconnect grace period without waiting 30 seconds. */
+    ChatRoom(int maxHistory, long offlineGracePeriodMs) {
+        this(maxHistory, null, null, offlineGracePeriodMs);
+    }
+
+    private ChatRoom(int maxHistory, ChatRepository repository, ImageStorage imageStorage, long offlineGracePeriodMs) {
         this.maxHistory = maxHistory;
+        this.offlineGracePeriodMs = offlineGracePeriodMs;
         this.repository = repository;
         this.imageStorage = imageStorage;
         if (repository != null) {
@@ -77,40 +101,21 @@ public class ChatRoom {
     }
 
     private User login(String username, String displayName, Role role, long mutedUntil, String avatar) {
-        synchronized (this) {
-            for (String name : onlineUsers.keySet()) {
-                if (name.equalsIgnoreCase(username)) {
-                    throw new DuplicateUsernameException(name);
-                }
-            }
-            User user = new User(username, displayName, role, mutedUntil, System.currentTimeMillis(), avatar);
-            onlineUsers.put(username, user);
-            publishSystem(displayName + " 加入了聊天室");
-            return user;
-        }
+        return new User(username, displayName, role, mutedUntil, System.currentTimeMillis(), avatar);
     }
 
     public void leave(String username, String httpSessionId) {
-        Set<Session> sockets = wsByHttpSession.remove(httpSessionId);
+        Set<Session> sockets = wsByHttpSession.get(httpSessionId);
         if (sockets != null) {
-            sockets.forEach(this::closeQuietly);
-        }
-        if (username == null) {
-            return;
-        }
-        synchronized (this) {
-            User user = onlineUsers.remove(username);
-            if (user != null) {
-                publishSystem(user.displayName() + " 离开了聊天室");
-            }
+            List.copyOf(sockets).forEach(this::closeQuietly);
         }
     }
 
     public Message sendChat(String username, String content) {
         synchronized (this) {
             User sender = requireSendAccess(username);
-            String displayName = sender == null ? username : sender.displayName();
-            Message message = createMessage(Message.TYPE_CHAT, username, displayName, filterSensitive(content));
+            Message message = createMessage(Message.TYPE_CHAT, username, sender.displayName(),
+                    filterSensitive(content));
             broadcastPacket(Map.of("type", "message", "data", message));
             return message;
         }
@@ -132,8 +137,7 @@ public class ChatRoom {
             }
             ChatImage image = imageStorage.store(originalName, bytes);
             try {
-                String displayName = sender == null ? username : sender.displayName();
-                Message message = createMessage(Message.TYPE_CHAT, username, displayName, "", image);
+                Message message = createMessage(Message.TYPE_CHAT, username, sender.displayName(), "", image);
                 broadcastPacket(Map.of("type", "message", "data", message));
                 return message;
             } catch (RuntimeException | Error e) {
@@ -259,16 +263,93 @@ public class ChatRoom {
         return onlineUsers.size();
     }
 
-    public void bindWs(String httpSessionId, Session ws) {
-        wsByHttpSession.computeIfAbsent(httpSessionId, ignored -> ConcurrentHashMap.newKeySet()).add(ws);
-        pushOnlineTo(ws);
+    /**
+     * Checks whether this HTTP session may establish the WebSocket for its account.
+     * This is also used as a browser-safe fallback because a close during the WebSocket
+     * opening handshake is sometimes reported as code 1006 without a close reason.
+     */
+    public Optional<String> webSocketRejection(User user, String httpSessionId) {
+        synchronized (this) {
+            String ownerSessionId = httpSessionIdByUser.entrySet().stream()
+                    .filter(entry -> entry.getKey().equalsIgnoreCase(user.username()))
+                    .map(Map.Entry::getValue)
+                    .findFirst()
+                    .orElse(null);
+            boolean occupied = onlineUsers.keySet().stream()
+                    .anyMatch(username -> username.equalsIgnoreCase(user.username()));
+            if (occupied && !httpSessionId.equals(ownerSessionId)) {
+                return Optional.of("该账户已在其他连接在线");
+            }
+            return Optional.empty();
+        }
+    }
+
+    public void bindWs(User user, String httpSessionId, Session ws) {
+        synchronized (this) {
+            if (webSocketRejection(user, httpSessionId).isPresent()) {
+                throw new DuplicateUsernameException(user.username());
+            }
+            // Reconnection within the grace period keeps the existing online entry.
+            pendingOfflineTokens.remove(user.username());
+            httpSessionIdByUser.put(user.username(), httpSessionId);
+
+            User online = onlineUsers.getOrDefault(user.username(), user);
+            boolean joined = onlineUsers.putIfAbsent(user.username(), online) == null;
+            if (joined) {
+                publishSystem(online.displayName() + " 加入了聊天室");
+            }
+            if (userByWs.containsKey(ws)) {
+                throw new IllegalStateException("WebSocket 已绑定聊天用户");
+            }
+            userByWs.put(ws, online);
+            wsByHttpSession.computeIfAbsent(httpSessionId, ignored -> ConcurrentHashMap.newKeySet()).add(ws);
+        }
+        broadcastPacket(Map.of("type", "online", "data", onlineSnapshot()));
     }
 
     public void unbindWs(Session ws) {
-        wsByHttpSession.values().forEach(set -> set.remove(ws));
+        User user = userByWs.remove(ws);
+        String httpSessionId = null;
+        for (Map.Entry<String, Set<Session>> entry : wsByHttpSession.entrySet()) {
+            boolean removed = entry.getValue().remove(ws);
+            if (removed) {
+                httpSessionId = entry.getKey();
+            }
+        }
         wsByHttpSession.values().removeIf(Set::isEmpty);
         outbound.remove(ws);
         draining.remove(ws);
+        if (user == null || httpSessionId == null) {
+            return;
+        }
+        synchronized (this) {
+            if (userByWs.values().stream().noneMatch(candidate ->
+                    candidate.username().equalsIgnoreCase(user.username()))) {
+                scheduleOffline(user.username(), httpSessionId);
+            }
+        }
+    }
+
+    private void scheduleOffline(String username, String httpSessionId) {
+        String token = UUID.randomUUID().toString();
+        pendingOfflineTokens.put(username, token);
+        presenceScheduler.schedule(() -> markOfflineIfStillDisconnected(username, httpSessionId, token),
+                offlineGracePeriodMs, TimeUnit.MILLISECONDS);
+    }
+
+    private void markOfflineIfStillDisconnected(String username, String httpSessionId, String token) {
+        synchronized (this) {
+            if (!token.equals(pendingOfflineTokens.get(username))
+                    || userByWs.values().stream().anyMatch(user -> user.username().equalsIgnoreCase(username))) {
+                return;
+            }
+            pendingOfflineTokens.remove(username, token);
+            User removed = onlineUsers.remove(username);
+            httpSessionIdByUser.remove(username, httpSessionId);
+            if (removed != null) {
+                publishSystem(removed.displayName() + " 离开了聊天室");
+            }
+        }
     }
 
     public void pushOnlineTo(Session ws) {
@@ -297,7 +378,10 @@ public class ChatRoom {
 
     private User requireSendAccess(String username) {
         User sender = onlineUsers.get(username);
-        if (sender != null && sender.mutedUntil() > System.currentTimeMillis()) {
+        if (sender == null) {
+            throw new UserOfflineException("聊天连接尚未建立，请刷新页面");
+        }
+        if (sender.mutedUntil() > System.currentTimeMillis()) {
             throw new AccountMutedException(sender.mutedUntil());
         }
         return sender;

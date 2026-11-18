@@ -61,16 +61,17 @@ function wsUrl() {
 }
 
 function connectWs() {
-  ws = new WebSocket(wsUrl())
+  const socket = new WebSocket(wsUrl())
+  ws = socket
 
-  ws.onopen = async () => {
+  socket.onopen = async () => {
     connected.value = true
     retries = 0
     // 先建立 WS 再拉历史，两条消息之间没有空窗：拉取之后产生的新消息都会从 WS 推过来
     await Promise.all([loadHistory(), loadUsers()])
   }
 
-  ws.onmessage = (event) => {
+  socket.onmessage = (event) => {
     const packet = JSON.parse(event.data)
     if (packet.type === 'message') {
       appendMessage(packet.data)
@@ -85,12 +86,21 @@ function connectWs() {
     // pong：保活心跳，无需处理
   }
 
-  ws.onclose = (event) => {
+  socket.onclose = async (event) => {
+    if (ws !== socket) return
     connected.value = false
     // 1008 = 服务端拒绝（未登录/会话过期），回到登录页而不是无限重连
     if (event.code === 1008) {
       leaving = true
-      emit('logout')
+      emit('logout', event.reason || '连接已被服务端关闭，请重新登录')
+      return
+    }
+    // Tomcat/browser combinations may expose an on-open policy rejection as
+    // 1006 with no reason. Ask the authenticated HTTP session for its reason.
+    const rejection = await webSocketRejection()
+    if (rejection) {
+      leaving = true
+      emit('logout', rejection)
       return
     }
     if (!leaving) {
@@ -100,7 +110,18 @@ function connectWs() {
     }
   }
 
-  ws.onerror = () => ws?.close()
+  socket.onerror = () => socket.close()
+}
+
+async function webSocketRejection() {
+  try {
+    const res = await fetch('/api/websocket-status')
+    if (res.status !== 409 && res.status !== 401) return ''
+    const data = await res.json().catch(() => ({}))
+    return data.error || '连接已被服务端关闭，请重新登录'
+  } catch {
+    return ''
+  }
 }
 
 async function loadHistory() {

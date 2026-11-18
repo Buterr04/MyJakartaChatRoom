@@ -9,6 +9,9 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.Base64;
 import java.util.List;
+import java.lang.reflect.Proxy;
+
+import jakarta.websocket.Session;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -27,12 +30,38 @@ class ChatRoomTest {
     @TempDir
     Path temporaryDirectory;
 
+    private static void connect(ChatRoom room, User user) {
+        room.bindWs(user, "session-" + user.username(), webSocket());
+    }
+
+    private static Session webSocket() {
+        return (Session) Proxy.newProxyInstance(Session.class.getClassLoader(), new Class<?>[]{Session.class},
+                (proxy, method, arguments) -> {
+                    if (method.getName().equals("hashCode")) {
+                        return System.identityHashCode(proxy);
+                    }
+                    if (method.getName().equals("equals")) {
+                        return proxy == arguments[0];
+                    }
+                    if (method.getName().equals("toString")) {
+                        return "WebSocket@" + System.identityHashCode(proxy);
+                    }
+                    if (method.getReturnType() == boolean.class) {
+                        return false;
+                    }
+                    return null;
+                });
+    }
+
     @Test
-    @DisplayName("登录后用户在线，并产生一条加入的系统消息")
-    void loginAddsUserAndSystemMessage() {
+    @DisplayName("WebSocket 连接后用户在线并产生加入消息")
+    void webSocketConnectionAddsOnlineUserAndSystemMessage() {
         ChatRoom room = new ChatRoom(200);
         User user = room.login("小明");
+        assertEquals(0, room.onlineCount());
+        assertThrows(UserOfflineException.class, () -> room.sendChat("小明", "offline"));
 
+        connect(room, user);
         assertEquals("小明", user.username());
         assertTrue(room.onlineCount() == 1);
         List<Message> history = room.historyAfter(0);
@@ -42,13 +71,33 @@ class ChatRoomTest {
     }
 
     @Test
-    @DisplayName("重名（忽略大小写）登录被拒绝")
+    @DisplayName("同一账户忽略大小写只允许一个 WebSocket 连接会话在线")
     void duplicateUsernameRejected() {
         ChatRoom room = new ChatRoom(200);
-        room.login("Alice");
+        connect(room, room.login("Alice"));
+        assertThrows(DuplicateUsernameException.class,
+                () -> room.bindWs(room.login("ALICE"), "session-ALICE", webSocket()));
+        assertEquals(1, room.onlineCount());
+    }
 
-        assertThrows(DuplicateUsernameException.class, () -> room.login("Alice"));
-        assertThrows(DuplicateUsernameException.class, () -> room.login("ALICE"));
+    @Test
+    @DisplayName("同一 HTTP 会话的多个标签页只算一个在线用户")
+    void multipleTabsShareOneOnlineUser() throws Exception {
+        ChatRoom room = new ChatRoom(200, 40);
+        User user = room.login("小明");
+        Session firstTab = webSocket();
+        Session secondTab = webSocket();
+
+        room.bindWs(user, "session-1", firstTab);
+        room.bindWs(user, "session-1", secondTab);
+        assertEquals(1, room.onlineCount());
+
+        room.unbindWs(firstTab);
+        assertEquals(1, room.onlineCount());
+
+        room.unbindWs(secondTab);
+        Thread.sleep(120);
+        assertEquals(0, room.onlineCount());
     }
 
     @Test
@@ -56,6 +105,7 @@ class ChatRoomTest {
     void sensitiveWordsMasked() {
         ChatRoom room = new ChatRoom(200);
         room.login("小明");
+        connect(room, room.login("小明"));
 
         Message sent = room.sendChat("小明", "你去死吧，笨蛋！");
 
@@ -67,6 +117,7 @@ class ChatRoomTest {
     void historyTrimmed() {
         ChatRoom room = new ChatRoom(3);
         room.login("小明");
+        connect(room, room.login("小明"));
         for (int i = 1; i <= 5; i++) {
             room.sendChat("小明", "消息" + i);
         }
@@ -79,13 +130,18 @@ class ChatRoomTest {
     }
 
     @Test
-    @DisplayName("leave 后用户离线并广播离场系统消息")
-    void leaveRemovesUser() {
-        ChatRoom room = new ChatRoom(200);
-        room.login("小明");
+    @DisplayName("最后一个 WebSocket 断开满宽限期后用户才离线")
+    void disconnectingLastWebSocketRemovesUserAfterGracePeriod() throws Exception {
+        ChatRoom room = new ChatRoom(200, 40);
+        User user = room.login("小明");
+        Session socket = webSocket();
+        room.bindWs(user, "session-1", socket);
+        assertEquals(1, room.onlineCount());
 
-        room.leave("小明", "session-1");
+        room.unbindWs(socket);
 
+        assertEquals(1, room.onlineCount());
+        Thread.sleep(120);
         assertEquals(0, room.onlineCount());
         List<Message> history = room.historyAfter(0);
         assertFalse(history.isEmpty());
@@ -93,10 +149,29 @@ class ChatRoomTest {
     }
 
     @Test
+    @DisplayName("宽限期内重连不产生离开或再次加入消息")
+    void reconnectingDuringGracePeriodKeepsUserOnline() throws Exception {
+        ChatRoom room = new ChatRoom(200, 120);
+        User user = room.login("小明");
+        Session firstSocket = webSocket();
+        room.bindWs(user, "session-1", firstSocket);
+        room.unbindWs(firstSocket);
+
+        Thread.sleep(30);
+        room.bindWs(user, "session-1", webSocket());
+        Thread.sleep(140);
+
+        assertEquals(1, room.onlineCount());
+        assertEquals(1, room.historyAfter(0).size());
+        assertTrue(room.historyAfter(0).get(0).content().contains("加入了聊天室"));
+    }
+
+    @Test
     @DisplayName("historyAfter 按消息 id 做增量过滤")
     void historyAfterFiltersById() {
         ChatRoom room = new ChatRoom(200);
         room.login("小明");
+        connect(room, room.login("小明"));
         Message first = room.sendChat("小明", "第一条");
         room.sendChat("小明", "第二条");
 
@@ -111,6 +186,7 @@ class ChatRoomTest {
     void mutedAccountCannotSendUntilUnmuted() {
         ChatRoom room = new ChatRoom(200);
         room.login(new Account("alice", "Alice", Role.USER, 0));
+        connect(room, room.login("alice"));
         int historySize = room.historyAfter(0).size();
         long mutedUntil = System.currentTimeMillis() + 60_000;
 
@@ -128,6 +204,7 @@ class ChatRoomTest {
     void deleteRemovesOnlyChatMessages() {
         ChatRoom room = new ChatRoom(200);
         room.login("alice");
+        connect(room, room.login("alice"));
         Message system = room.historyAfter(0).get(0);
         Message chat = room.sendChat("alice", "delete me");
 
@@ -142,6 +219,7 @@ class ChatRoomTest {
     void roleAndAvatarUpdatesReachOnlineUser() {
         ChatRoom room = new ChatRoom(200);
         room.login(new Account("alice", "Alice", Role.USER, 0));
+        connect(room, room.login("alice"));
 
         Account promoted = room.setRole("alice", Role.ADMIN).orElseThrow();
         assertEquals(Role.ADMIN, promoted.role());
@@ -161,6 +239,7 @@ class ChatRoomTest {
         ChatRepository repository = new ChatRepository(database);
         ChatRoom room = new ChatRoom(200, repository, storage);
         room.login("alice");
+        connect(room, room.login("alice"));
 
         Message sent = room.sendImage("alice", "../pixel.png", PNG);
         assertEquals("pixel.png", sent.image().originalName());
@@ -176,5 +255,19 @@ class ChatRoomTest {
         assertTrue(restored.deleteMessage(sent.id()));
         assertTrue(repository.findImage(sent.image().id()).isEmpty());
         assertThrows(NoSuchFileException.class, () -> storage.read(sent.image()));
+    }
+
+    @Test
+    @DisplayName("同一账户不能从另一个 HTTP 会话连接")
+    void sameAccountCannotBindFromAnotherHttpSession() {
+        ChatRoom room = new ChatRoom(200);
+        Account account = new Account("alice", "Alice", Role.USER, 0);
+        User user = room.login(account);
+        room.bindWs(user, "session-1", webSocket());
+
+        assertThrows(DuplicateUsernameException.class,
+                () -> room.bindWs(user, "session-2", webSocket()));
+        assertTrue(room.webSocketRejection(user, "session-2").isPresent());
+        assertTrue(room.webSocketRejection(user, "session-1").isEmpty());
     }
 }

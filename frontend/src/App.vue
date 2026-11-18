@@ -6,6 +6,7 @@ import ChatView from './components/ChatView.vue'
 
 const me = ref(null)
 const checking = ref(true)
+const logoutReason = ref('')
 
 onMounted(async () => {
   try {
@@ -44,6 +45,11 @@ function handleLogout() {
   me.value = null
 }
 
+function handleLogoutWithReason(reason) {
+  logoutReason.value = reason || ''
+  handleLogout()
+}
+
 function handleAccountUpdated(account) {
   if (me.value?.username.toLowerCase() === account.username.toLowerCase()) {
     me.value = { ...me.value, ...account }
@@ -56,8 +62,15 @@ function handleAccountUpdated(account) {
     <AmbientBackground />
     <Transition name="view-switch" mode="out-in">
       <div v-if="checking" key="boot" class="boot">正在进入聊天室…</div>
-      <LoginView v-else-if="!me" key="login" :login="handleLogin" :register="handleRegister" />
-      <ChatView v-else key="chat" :me="me" @logout="handleLogout" @account-updated="handleAccountUpdated" />
+      <LoginView
+        v-else-if="!me"
+        key="login"
+        :login="handleLogin"
+        :register="handleRegister"
+        :initial-error="logoutReason"
+        @clear-error="logoutReason = ''"
+      />
+      <ChatView v-else key="chat" :me="me" @logout="handleLogoutWithReason" @account-updated="handleAccountUpdated" />
     </Transition>
   </div>
 </template>

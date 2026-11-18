@@ -36,7 +36,7 @@
 │  LoginView   │          │                             ▼                  │
 │              │          │                 ┌──────────────────────────┐   │
 │              │  WS      │  ┌──────────┐   │  ChatRoom（核心状态）      │   │
-│              │ ───────▶ │  │/ws/chat  │──▶│  · onlineUsers 在线用户    │   │
+│              │ ───────▶ │  │/ws/chat  │──▶│  · onlineUsers = WS 在线    │   │
 │              │ /ws/chat │  │ Endpoint │◀──│  · history 消息历史(≤200) │   │
 │              │  推送    │  └──────────┘   │  · wsByHttpSession 连接表 │   │
 │              │ ◀─────── │   WsSci 注册    └───────────┬──────────────┘   │
@@ -46,7 +46,7 @@
                           └────────────────────────────────────────────────┘
 ```
 
-架构一句话概括：**命令走 REST（request/response，状态码明确），事件走 WebSocket（服务端主动推送）**。`ChatRoom` 管理在线用户和连接等运行时状态，`ChatRepository` 将账户、AI 配置及最近 200 条消息保存到 SQLite，`ImageStorage` 将聊天图片按 UUID 文件名保存到本地上传目录；重启只恢复账户、消息、图片元数据和 AI 配置，不恢复在线状态。
+架构一句话概括：**命令走 REST（request/response，状态码明确），事件走 WebSocket（服务端主动推送）**。`ChatRoom` 的在线名单由 `/ws/chat` 连接状态派生，同时管理消息历史和广播；`ChatRepository` 将账户、AI 配置及最近 200 条消息保存到 SQLite，`ImageStorage` 将聊天图片按 UUID 文件名保存到本地上传目录；重启只恢复账户、消息、图片元数据和 AI 配置，不恢复在线状态。
 
 ### 1.2 技术选型与理由
 
@@ -261,16 +261,16 @@ tomcat.getServer().await();
     │─────────────────────────▶│ AuthFilter 放行 /api/login            │
     │                          │ repository.authenticate(alice,密码)    │
     │                          │ ChatRoom.login(account)                │
-    │                          │   查重 → 放入 onlineUsers              │
-    │                          │   持久化并广播加入消息 + online         │
-    │                          │   → 广播 message + online             │
+    │                          │   认证成功，只创建 User/HttpSession      │
     │◀── 200 {username,...} ───│                    ────────────────────▶│ (B 已连接时)
     │ Set-Cookie: JSESSIONID   │                                       │
     │                          │                                       │
     │ ws://…/ws/chat 握手 ─────▶│ ChatConfigurator.modifyHandshake      │
     │  (自动带 JSESSIONID)      │   从握手请求取出 HttpSession           │
     │                          │ getEndpointInstance → new ChatEndpoint│
-    │◀── 101 Switching ────────│ onOpen: 校验 username → bindWs        │
+    │◀── 101 Switching ────────│ onOpen: 读取 chatUser → bindWs        │
+    │                          │   同账户会话查重 → 放入 onlineUsers    │
+    │                          │   持久化并广播加入消息 + online         │
     │◀── {type:"online"} ──────│   （对齐一次在线名单）                  │
     │                          │                                       │
     │ POST /api/messages ──────▶│ sendChat("alice","你好")              │
@@ -313,7 +313,7 @@ private final ExecutorService broadcaster = /* 单守护线程 "chat-broadcaster
 
 并发设计三条规则：
 
-1. **所有对 `history` 的读写都在 `synchronized(this)` 内**（`login` / `leave` / `sendChat` / `historyAfter`），配合 `idGen` 保证消息 id 单调递增；
+1. **所有对 `history`、`onlineUsers` 和连接映射的变更都在 `synchronized(this)` 内**；在线状态只由 WebSocket 连接变更修改；
 2. **所有下行推送都提交给单线程 `broadcaster`**：提交顺序 = 消息 id 顺序 = 每个连接的接收顺序；
 3. **连接注册表、出站队列等纯并发容器不加粗锁**，读写各自安全。
 
@@ -379,7 +379,7 @@ public void sessionDestroyed(HttpSessionEvent se) {
 }
 ```
 
-注意：**在线人数不在这里加减**——它永远是 `onlineUsers.size()` 的派生值，从根上避免 PR04~PR06 那种"计数器对不上"的 bug。
+注意：**登录不等于在线**。`login` 只做认证并准备 `User`；`bindWs` 时才写入 `onlineUsers`。同一 HTTP 会话可开多个标签页，但只算一个在线用户；断开最后一个标签页连接立即离线。另一个 HTTP 会话尝试连接同名账户会被拒绝。
 
 ### 4.5 线程模型一览
 
@@ -411,7 +411,7 @@ public void sessionDestroyed(HttpSessionEvent se) {
 | 方法 | 路径 | 请求体 | 成功响应 | 失败 |
 | --- | --- | --- | --- | --- |
 | POST | `/api/register` | `{"username":"alice","displayName":"小明","password":"..."}` | `201` 账户资料（不含密码信息） | `400` 校验失败；`409` 用户名已存在 |
-| POST | `/api/login` | `{"username":"alice","password":"..."}` | `200` 在线用户资料（含 `role`、`mutedUntil`） + Set-Cookie | `400` 缺少字段；`401` 凭据错误；`409` 已在线 |
+| POST | `/api/login` | `{"username":"alice","password":"..."}` | `200` 登录用户资料（含 `role`、`mutedUntil`） + Set-Cookie | `400` 缺少字段；`401` 凭据错误 |
 | GET | `/api/me` | — | `200` 最新账户公开资料（含角色与禁言状态） | `401` |
 | PUT | `/api/me/avatar` | `{"avatar":"data:image/png;base64,..."}`，null/空串恢复默认 | `200` 最新账户资料 | `400` 图片格式或大小错误；`401` |
 | PUT | `/api/me/password` | `{"currentPassword":"...","newPassword":"..."}`，新密码长度 8~128 个字符 | `200` `{"ok":true}`，当前会话保持有效 | `400` 当前密码错误或新密码格式不合法；`401` |
@@ -466,7 +466,7 @@ curl -s -b a.jar -F 'image=@pixel.png;type=image/png' localhost:8080/api/message
 时序约定（前端依赖）：
 
 1. 客户端**先连 WS，再拉 REST 历史**——两条消息之间没有空窗：拉取之后产生的新消息必经 WS 推送到达；
-2. `bindWs` 时服务端会先推一帧当前 `online` 快照，客户端以 REST 拉到的名单为准即可（二者最终一致）。
+2. WebSocket 连接建立时才加入 `onlineUsers`；同一 HTTP 会话的多个标签页只算一人，断开最后一个连接立即离线。另一个 HTTP 会话连接同一账户会被 1008 关闭。
 
 ## 7. 前端架构详解
 
@@ -676,7 +676,7 @@ Tomcat.addServlet(ctx, "searchServlet", new SearchServlet(chatRoom)).addMapping(
 | 打开首页 404 | dist 不存在（纯 API 模式） | 先 `npm run build`，或 `APP_STATIC_DIR` 指向构建产物 |
 | 页面白屏、JS 不执行 | 自定义静态目录缺 MIME 映射 | 参考第 9 节坑 ②，在 Main 补 `addMimeMapping` |
 | 一直显示"连接中…" | 后端没启动 / 开发模式没走 5173 | 确认后端日志与访问端口；WS 依赖 `/ws` 代理 |
-| 登录报 409「已经在线了」 | 同名会话未过期 | 用别的用户名，或等会话超时（60 分钟）/ 重启后端；测试脚本务必 `POST /api/logout` 清理 |
+| WebSocket 报 1008「该账户已在其他连接在线」 | 同名账户已从另一个 HTTP 会话连接 | 用别的用户名，或先断开旧连接；测试脚本务必 `POST /api/logout` 清理 |
 | 改了 Java 代码不生效 | `exec:java` 无热加载 | 重启：`Ctrl-C` 后再 `mvn compile exec:java` |
 | Maven 编译报 release 21 无效 | Maven 用的 JDK < 21 | `JAVA_HOME` 指向 JDK 21 |
 | 测试间相互影响（409） | ChatRoom 是同一个 JVM 内状态 | 每个用例 new `ChatRoom`；集成测试用随机用户名 + 登出清理 |

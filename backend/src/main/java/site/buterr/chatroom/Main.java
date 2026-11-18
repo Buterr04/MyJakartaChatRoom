@@ -35,6 +35,7 @@ import site.buterr.chatroom.servlet.MeServlet;
 import site.buterr.chatroom.servlet.MessagesServlet;
 import site.buterr.chatroom.servlet.PasswordServlet;
 import site.buterr.chatroom.servlet.UsersServlet;
+import site.buterr.chatroom.servlet.WebSocketStatusServlet;
 import site.buterr.chatroom.store.ChatRepository;
 import site.buterr.chatroom.store.ChatRoom;
 import site.buterr.chatroom.store.ChatRoomHolder;
@@ -133,6 +134,8 @@ public final class Main {
         Tomcat.addServlet(ctx, "registerServlet", new RegisterServlet(repository)).addMapping("/api/register");
         Tomcat.addServlet(ctx, "loginServlet", new LoginServlet(chatRoom, repository)).addMapping("/api/login");
         Tomcat.addServlet(ctx, "meServlet", new MeServlet(repository)).addMapping("/api/me");
+        Tomcat.addServlet(ctx, "webSocketStatusServlet", new WebSocketStatusServlet(chatRoom))
+                .addMapping("/api/websocket-status");
         Tomcat.addServlet(ctx, "avatarServlet", new AvatarServlet(chatRoom)).addMapping("/api/me/avatar");
         Tomcat.addServlet(ctx, "passwordServlet", new PasswordServlet(repository))
                 .addMapping("/api/me/password");

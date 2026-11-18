@@ -26,13 +26,13 @@
 - SQLite 持久化账户与最近 200 条聊天/系统消息，重启后恢复历史；在线用户和 WebSocket 连接不跨重启恢复
 - 个人主页：展示用户名、显示名称与权限，支持上传或恢复默认头像、校验当前密码后修改登录密码；头像在页头和在线名单中同步显示
 - 角色权限：内置默认管理员 `Admin`（密码 `admin`）；管理员可管理全部账户、任命或取消管理员、删除聊天消息、禁言或解禁用户
-- HttpSession 保持登录态，刷新页面自动恢复；同一账户不能重复在线
+- HttpSession 保持登录态，刷新页面自动恢复；在线状态由 `/ws/chat` 连接派生，同一账户同一时刻只能保留一个 HTTP 会话的实时连接
 - 实时聊天：发消息走 REST（拿到明确的 201/400/401 状态码），新消息经 WebSocket 广播给所有在线用户
 - 图片消息：像微信表情一样内嵌展示，支持 10MB 以内的 PNG、JPEG、GIF、WebP，GIF 保留动画，点击可查看原图
 - AI 助手：消息开头输入 `@AI` 即可提问；支持最近聊天上下文，回复异步生成并实时广播，不阻塞其他消息
 - AI 后台配置：仅内置超级管理员 `Admin` 可维护兼容 `chat/completions` 的接口地址、模型、API Key、系统提示词与启用状态，并可测试连接
 - 系统消息：成员加入 / 离开实时广播
-- 在线名单侧栏：人数与列表随登录 / 登出 / 会话超时实时更新
+- 在线名单侧栏：人数与列表随 WebSocket 连接建立 / 断开实时更新；同一 HTTP 会话的多个标签页只算一个在线用户
 - 敏感词过滤（沿袭 PR04）、消息历史上限 200 条（对应 PR03 的 maxMessageCount）、消息长度校验
 - 断线自动重连（指数退避），会话过期被服务端拒绝（关闭码 1008）时自动回到登录页
 - XSS 防护：消息以原始文本存储，Vue 插值默认转义输出（PR01 的经验：在输出端转义）
@@ -115,7 +115,7 @@ MyJakartaChatRoom/
 | 方法 | 路径 | 说明 | 成功 | 失败 |
 | --- | --- | --- | --- | --- |
 | POST | `/api/register` | 注册，`{"username":"...","displayName":"...","password":"..."}` | 201 + 账户资料 | 400 校验失败 / 409 用户名已存在 |
-| POST | `/api/login` | 登录，`{"username":"...","password":"..."}` | 200 + 用户信息 | 400 校验失败 / 401 凭据错误 / 409 已在线 |
+| POST | `/api/login` | 登录，`{"username":"...","password":"..."}` | 200 + 用户信息 | 400 校验失败 / 401 凭据错误 |
 | GET | `/api/me` | 当前登录用户（恢复会话用） | 200 | 401 |
 | PUT | `/api/me/avatar` | 更新头像，`{"avatar":"data:image/png;base64,..."}`；null 恢复默认 | 200 | 400 / 401 |
 | PUT | `/api/me/password` | 修改密码，`{"currentPassword":"...","newPassword":"..."}`；新密码长度 8~128 个字符 | 200 | 400 旧密码错误或格式不合法 / 401 |
@@ -142,7 +142,7 @@ MyJakartaChatRoom/
 ```jsonc
 // 新消息（chat=用户发言，system=系统提示）
 {"type":"message","data":{"id":3,"type":"chat","username":"alice","displayName":"小明","content":"你好","createdAt":1792810797079}}
-// 在线名单（登录/登出/超时时推送）
+// 在线名单（WebSocket 连接建立/断开、登出或会话超时时推送）
 {"type":"online","data":{"count":2,"users":[{"username":"alice","displayName":"小明","loginAt":...}]}}
 // 管理员删除聊天消息
 {"type":"messageDeleted","data":{"id":3}}
@@ -164,7 +164,7 @@ MyJakartaChatRoom/
 | PR04 AuthFilter | `filter/AuthFilter.java`（未登录返回 401 JSON 而非重定向） |
 | PR04 SessionLifecycleListener | `listener/SessionLifecycleListener.java`（会话销毁 → 离场清理） |
 | PR04 敏感词过滤 | `ChatRoom.filterSensitive` |
-| PR05 在线人数 | 由在线用户表派生，不再手工加减计数器 |
+| PR05 在线人数 | 由 WebSocket 连接状态派生，不再手工加减计数器 |
 | PR06 前后端职责分离 | 服务端只出 JSON，渲染完全交给前端 |
 
 **新增技能**：WebSocket 实时推送、Vite/Vue 3 前后端分离开发、内嵌 Tomcat 装配、Java record + Jackson。

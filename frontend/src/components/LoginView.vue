@@ -1,20 +1,34 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import SpotlightCard from './SpotlightCard.vue'
 
 const props = defineProps({
   login: { type: Function, required: true },
   register: { type: Function, required: true },
+  initialError: { type: String, default: '' },
 })
+const emit = defineEmits(['clear-error'])
 
 const mode = ref('login')
 const username = ref('')
 const displayName = ref('')
 const password = ref('')
 const confirmPassword = ref('')
-const error = ref('')
+const error = ref(props.initialError)
 const success = ref('')
 const loading = ref(false)
+
+watch(() => props.initialError, (value) => {
+  if (value) {
+    error.value = value
+    mode.value = 'login'
+    success.value = ''
+  }
+}, { immediate: true })
+
+watch(error, (value) => {
+  if (!value) emit('clear-error')
+})
 
 function switchMode(nextMode) {
   mode.value = nextMode
