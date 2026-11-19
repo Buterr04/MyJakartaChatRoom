@@ -12,7 +12,8 @@ import site.buterr.chatroom.util.JsonUtil;
 
 /**
  * POST /api/logout —— 登出。销毁 HttpSession 后，SessionLifecycleListener
- * 会负责把用户请出聊天室、关闭其 WebSocket 连接并广播离场消息。
+ * 会立即把该会话绑定的用户请出聊天室、关闭其 WebSocket 连接并广播离场消息；
+ * 30 秒宽限只用于 WebSocket 意外断开，不用于显式登出。
  */
 public class LogoutServlet extends HttpServlet {
 

@@ -22,18 +22,21 @@
 
 ## 功能
 
-- 用户注册与密码登录：用户名忽略大小写唯一，显示名称用于聊天展示，密码使用随机盐 PBKDF2 哈希保存
-- SQLite 持久化账户与最近 200 条聊天/系统消息，重启后恢复历史；在线用户和 WebSocket 连接不跨重启恢复
+- 用户注册与密码登录：用户名注册查重忽略大小写（`Alice`/`alice` 视为同名），登录校验区分大小写；显示名称用于聊天展示，密码使用随机盐 PBKDF2 哈希保存
+- SQLite 永久保留账户与全部聊天/系统消息，重启后恢复历史；前端默认不显示历史，触屏下滑 / 鼠标向下滚动才加载最近 50 条并分页，历史不显示系统消息（系统消息仅在线时通过 WS 实时可见）；在线用户和 WebSocket 连接不跨重启恢复
 - 个人主页：展示用户名、显示名称与权限，支持上传或恢复默认头像、校验当前密码后修改登录密码；头像在页头和在线名单中同步显示
-- 角色权限：内置默认管理员 `Admin`（密码 `admin`）；管理员可管理全部账户、任命或取消管理员、删除聊天消息、禁言或解禁用户
-- HttpSession 保持登录态，刷新页面自动恢复；在线状态由 `/ws/chat` 连接派生，同一账户同一时刻只能保留一个 HTTP 会话的实时连接
+- 角色权限：内置超级管理员 `Admin`（密码 `admin`）；超级管理员可任命/取消聊天室管理员、删除消息、管理敏感词与 AI，并可禁言聊天室管理员；聊天室管理员有「用户管理」但只能禁言普通用户；在线列表对普通用户/聊天室管理员隐藏 Admin，Admin 自己可见
+- HttpSession 保持登录态，刷新页面自动恢复；在线状态由 `/ws/chat` 连接派生，同一账户同一时刻只能保留一个 HTTP 会话的实时连接；WS 断开后 30 秒宽限，显式登出立即离线；重复登录可选择强制挤掉旧会话
 - 实时聊天：发消息走 REST（拿到明确的 201/400/401 状态码），新消息经 WebSocket 广播给所有在线用户
+- 聊天室名称/图标：管理员可在「房间设置」修改名称、上传 ≤1MB 图标，保存后所有在线用户实时更新
+- Emoji 表情：输入框内置 64 个常用表情，点击插入光标位置，随消息一起发送
 - 图片消息：像微信表情一样内嵌展示，支持 10MB 以内的 PNG、JPEG、GIF、WebP，GIF 保留动画，点击可查看原图
 - AI 助手：消息开头输入 `@AI` 即可提问；支持最近聊天上下文，回复异步生成并实时广播，不阻塞其他消息
 - AI 后台配置：仅内置超级管理员 `Admin` 可维护兼容 `chat/completions` 的接口地址、模型、API Key、系统提示词与启用状态，并可测试连接
 - 系统消息：成员加入 / 离开实时广播
-- 在线名单侧栏：人数与列表随 WebSocket 连接建立 / 断开实时更新；同一 HTTP 会话的多个标签页只算一个在线用户
-- 敏感词过滤（沿袭 PR04）、消息历史上限 200 条（对应 PR03 的 maxMessageCount）、消息长度校验
+- 在线名单侧栏：人数与列表随 WebSocket 连接建立 / 断开实时更新；同一 HTTP 会话的多个标签页只算一个在线用户，最后一个连接断开 30 秒后离线（显式登出立即离线）
+- 超级管理员统计：今日消息、历史总数、今日登录人数/总人数、今日发言 TOP10、按天/周/月查询的消息柱状图，全部排除 system 消息
+- 敏感词过滤（仅超级管理员可在后台增删词库）、消息永久保留 + 游标分页、内存热窗口 200 条、消息长度校验
 - 断线自动重连（指数退避），会话过期被服务端拒绝（关闭码 1008）时自动回到登录页
 - XSS 防护：消息以原始文本存储，Vue 插值默认转义输出（PR01 的经验：在输出端转义）
 
@@ -78,7 +81,7 @@ cd frontend && npm install && npm run dev
 # 打开 http://localhost:5173
 ```
 
-可选环境变量：`APP_PORT`（默认 8080）、`APP_STATIC_DIR`（静态目录，默认自动探测 `../frontend/dist` → `frontend/dist` → 纯 API 模式）、`APP_DB_PATH`（默认 `chatroom.db`）、`APP_UPLOAD_DIR`（默认 `uploads`，保存聊天图片；文件路径均相对于后端启动目录）。
+可选环境变量：`APP_PORT`（默认 8080）、`APP_STATIC_DIR`（静态目录，默认自动探测 `../frontend/dist` → `frontend/dist` → 纯 API 模式）、`APP_DB_PATH`（默认 `chatroom.db`）、`APP_UPLOAD_DIR`（默认 `uploads`，保存聊天图片）、`APP_CONFIG_DIR`（默认 `config`，保存 `sensitive-words.json`、`ai-settings.json` 与 `room.json`；AI 文件含 API Key，已被 `.gitignore` 忽略）；文件路径均相对于后端启动目录。
 
 ## 目录结构
 
@@ -95,7 +98,8 @@ MyJakartaChatRoom/
 │       ├── chat/                     # WebSocket 端点 /ws/chat + 握手配置器
 │       ├── model/                    # Account / User / Message（不可变 record）
 │       ├── store/ChatRoom.java       # 运行时状态：在线用户 + 消息历史 + WS 连接登记 + 广播
-│       ├── store/ChatRepository.java # SQLite 账户、消息与 AI 配置持久化
+│       ├── store/ChatRepository.java # SQLite 账户、消息与旧配置迁移
+│       ├── store/LocalConfigStore.java # config/*.json（敏感词 / AI / 房间品牌）
 │       ├── store/PasswordHasher.java # 随机盐 PBKDF2 密码哈希
 │       ├── store/ImageStorage.java   # 聊天图片格式校验、UUID 文件存取与清理
 │       └── util/JsonUtil.java        # JSON 读写封装
@@ -115,20 +119,26 @@ MyJakartaChatRoom/
 | 方法 | 路径 | 说明 | 成功 | 失败 |
 | --- | --- | --- | --- | --- |
 | POST | `/api/register` | 注册，`{"username":"...","displayName":"...","password":"..."}` | 201 + 账户资料 | 400 校验失败 / 409 用户名已存在 |
-| POST | `/api/login` | 登录，`{"username":"...","password":"..."}` | 200 + 用户信息 | 400 校验失败 / 401 凭据错误 |
+| POST | `/api/login` | 登录，`{"username":"...","password":"...","force":false}`；`force=true` 可挤掉旧会话 | 200 + 用户信息 | 400 校验失败 / 401 凭据错误 / 409 已在其他设备登录（带 `code`，可强制登录） |
 | GET | `/api/me` | 当前登录用户（恢复会话用） | 200 | 401 |
+| GET | `/api/websocket-status` | WS 握手被拒时查询原因（浏览器可能只报 1006） | 200 `{ok:true}` | 401 / 409 已被占用 |
 | PUT | `/api/me/avatar` | 更新头像，`{"avatar":"data:image/png;base64,..."}`；null 恢复默认 | 200 | 400 / 401 |
 | PUT | `/api/me/password` | 修改密码，`{"currentPassword":"...","newPassword":"..."}`；新密码长度 8~128 个字符 | 200 | 400 旧密码错误或格式不合法 / 401 |
-| POST | `/api/logout` | 登出（销毁会话，触发离场广播） | 200 | — |
+| POST | `/api/logout` | 登出（立即销毁会话、广播离场） | 200 | — |
 | GET | `/api/users` | 在线用户列表 | 200 | 401 |
-| GET | `/api/messages?after={id}` | 历史消息（after 为增量游标） | 200 | 401 |
+| GET | `/api/messages?limit=50`、`?before={id}`、`?after={id}` | 历史消息分页（默认最新 50，limit 1~200） | 200 `{messages, hasMore}` | 400 / 401 |
 | POST | `/api/messages` | 发送消息，`{"content":"..."}` | 201 | 400 / 401 / 403 禁言 |
 | POST | `/api/messages/image` | multipart 字段 `image`，发送图片消息 | 201 | 400 / 401 / 403 / 413 |
 | GET | `/api/images/{id}` | 读取聊天图片（登录用户） | 200 图片字节 | 401 / 404 |
-| DELETE | `/api/admin/messages/{id}` | 管理员删除聊天消息 | 200 | 401 / 403 / 404 |
-| POST | `/api/admin/users/{username}/mute` | 禁言，`{"minutes":10}`；0 表示解禁 | 200 | 400 / 401 / 403 / 404 |
-| GET | `/api/admin/users` | 全部注册账户列表 | 200 | 401 / 403 |
-| POST | `/api/admin/users/{username}/role` | 更新角色，`{"role":"ADMIN"}` 或 `USER` | 200 | 400 / 401 / 403 / 404 |
+| DELETE | `/api/super-admin/messages/{id}` | 超级管理员删除聊天消息 | 200 | 401 / 403 / 404 |
+| POST | `/api/admin/users/{username}/mute` | 禁言普通用户，`{"minutes":10}`；0 表示解禁 | 200 | 400 / 401 / 403 / 404 |
+| GET | `/api/admin/users` | 管理员 / 超级管理员；列表隐藏 Admin 与当前登录账户 | 200 | 401 / 403 |
+| POST | `/api/admin/users/{username}/role` | 超级管理员设置/取消聊天室管理员 | 200 | 400 / 401 / 403 / 404 |
+| GET/POST/DELETE | `/api/super-admin/sensitive-words` | 超级管理员管理敏感词 | 200/201 | 400 / 401 / 403 / 404 / 409 |
+| GET | `/api/super-admin/statistics?from=&to=&granularity=` | 超级管理员消息统计；`granularity=day/week/month`；排除 system | 200 | 400 / 401 / 403 |
+| GET | `/api/room` | 公开聊天室名称/图标 | 200 | — |
+| PUT | `/api/admin/room` | 管理员/超级管理员修改名称、图标 | 200 | 400 / 401 / 403 |
+| GET | `/api/ai/status` | 已登录用户读取 AI 开关（控制 @AI 按钮） | 200 | 401 |
 | GET | `/api/super-admin/ai/settings` | Admin 查询 AI 配置，不返回 API Key | 200 | 401 / 403 |
 | PUT | `/api/super-admin/ai/settings` | Admin 保存 AI 配置；Key 留空保持，`clearApiKey:true` 清除 | 200 | 400 / 401 / 403 |
 | POST | `/api/super-admin/ai/settings/test` | Admin 使用已保存配置测试真实接口 | 200 + AI 回复 | 401 / 403 / 502 |
@@ -173,5 +183,5 @@ MyJakartaChatRoom/
 
 ```bash
 cd backend
-mvn test        # 26 项：聊天室规则、角色/头像/密码、图片存取、AI 请求与回复、旧库迁移及持久化
+mvn test        # 43 项：聊天室规则、角色/头像/密码、图片存取、AI 请求与回复、统计、旧库迁移及持久化
 ```

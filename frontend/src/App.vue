@@ -19,14 +19,18 @@ onMounted(async () => {
   }
 })
 
-async function handleLogin(username, password) {
+async function handleLogin(username, password, options = {}) {
   const res = await fetch('/api/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, force: options.force === true }),
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || '登录失败，请稍后再试')
+  if (!res.ok) {
+    const error = new Error(data.error || '登录失败，请稍后再试')
+    error.code = data.code
+    throw error
+  }
   me.value = data
 }
 

@@ -13,16 +13,16 @@ import jakarta.servlet.http.HttpSession;
 
 import site.buterr.chatroom.model.Account;
 import site.buterr.chatroom.model.User;
+import site.buterr.chatroom.store.AlreadyOnlineException;
 import site.buterr.chatroom.store.ChatRepository;
 import site.buterr.chatroom.store.ChatRoom;
-import site.buterr.chatroom.store.DuplicateUsernameException;
 import site.buterr.chatroom.util.JsonUtil;
 
 /** POST /api/login verifies an account password and establishes the HTTP session. */
 public class LoginServlet extends HttpServlet {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record LoginBody(String username, String password) {
+    record LoginBody(String username, String password, Boolean force) {
     }
 
     private final ChatRoom chatRoom;
@@ -50,23 +50,18 @@ public class LoginServlet extends HttpServlet {
         }
         try {
             HttpSession session = req.getSession(true);
-            User user = chatRoom.login(account.get());
-            // Login itself must report duplicate sign-ins. Waiting for the WebSocket
-            // close event hides this error in browsers that expose it as code 1006.
-            if (chatRoom.webSocketRejection(user, session.getId()).isPresent()) {
-                JsonUtil.write(resp, HttpServletResponse.SC_CONFLICT,
-                        Map.of("error", "该账户已经在当前聊天室在线"));
-                return;
-            }
+            boolean force = body != null && Boolean.TRUE.equals(body.force());
+            User user = chatRoom.login(account.get(), session.getId(), force);
+            repository.markLogin(user.username());
             session.setAttribute("chatUser", user);
             session.setAttribute("username", user.username());
             session.setAttribute("displayName", user.displayName());
             session.setAttribute("role", user.role().name());
             session.setAttribute("mutedUntil", user.mutedUntil());
             JsonUtil.write(resp, HttpServletResponse.SC_OK, user);
-        } catch (DuplicateUsernameException e) {
+        } catch (AlreadyOnlineException e) {
             JsonUtil.write(resp, HttpServletResponse.SC_CONFLICT,
-                    Map.of("error", "该账户已经在当前聊天室在线"));
+                    Map.of("error", "该账户已在其他设备登录", "code", "already_online"));
         }
     }
 }

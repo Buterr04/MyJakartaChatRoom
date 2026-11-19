@@ -25,11 +25,16 @@ import site.buterr.chatroom.listener.SessionLifecycleListener;
 import site.buterr.chatroom.servlet.AdminMessagesServlet;
 import site.buterr.chatroom.servlet.AdminUsersServlet;
 import site.buterr.chatroom.servlet.AiSettingsServlet;
+import site.buterr.chatroom.servlet.AiStatusServlet;
 import site.buterr.chatroom.servlet.AvatarServlet;
 import site.buterr.chatroom.servlet.ImageMessageServlet;
 import site.buterr.chatroom.servlet.ImageServlet;
 import site.buterr.chatroom.servlet.LoginServlet;
 import site.buterr.chatroom.servlet.RegisterServlet;
+import site.buterr.chatroom.servlet.RoomServlet;
+import site.buterr.chatroom.servlet.RoomSettingsServlet;
+import site.buterr.chatroom.servlet.SensitiveWordsServlet;
+import site.buterr.chatroom.servlet.StatisticsServlet;
 import site.buterr.chatroom.servlet.LogoutServlet;
 import site.buterr.chatroom.servlet.MeServlet;
 import site.buterr.chatroom.servlet.MessagesServlet;
@@ -37,6 +42,7 @@ import site.buterr.chatroom.servlet.PasswordServlet;
 import site.buterr.chatroom.servlet.UsersServlet;
 import site.buterr.chatroom.servlet.WebSocketStatusServlet;
 import site.buterr.chatroom.store.ChatRepository;
+import site.buterr.chatroom.store.LocalConfigStore;
 import site.buterr.chatroom.store.ChatRoom;
 import site.buterr.chatroom.store.ChatRoomHolder;
 import site.buterr.chatroom.store.ImageStorage;
@@ -60,9 +66,12 @@ public final class Main {
     public static void main(String[] args) throws Exception {
         int port = Integer.parseInt(System.getenv().getOrDefault("APP_PORT", String.valueOf(DEFAULT_PORT)));
         ChatRepository repository = new ChatRepository(resolveDatabasePath());
+        LocalConfigStore configStore = new LocalConfigStore(resolveConfigDirectory());
+        configStore.migrateFrom(repository);
+        repository.dropLegacyConfigTables();
         ImageStorage imageStorage = new ImageStorage(resolveUploadDirectory());
-        ChatRoom chatRoom = new ChatRoom(ChatRoom.MAX_HISTORY, repository, imageStorage);
-        AiAssistantService assistant = new AiAssistantService(repository, chatRoom);
+        ChatRoom chatRoom = new ChatRoom(ChatRoom.MAX_HISTORY, repository, imageStorage, configStore);
+        AiAssistantService assistant = new AiAssistantService(configStore, chatRoom);
         ChatRoomHolder.set(chatRoom);
 
         Tomcat tomcat = new Tomcat();
@@ -106,7 +115,7 @@ public final class Main {
         // 登录态过滤器：/api/* 除注册和登录外都要求已登录，对应 PR04 的 AuthFilter
         FilterDef authDef = new FilterDef();
         authDef.setFilterName("authFilter");
-        authDef.setFilter(new AuthFilter());
+        authDef.setFilter(new AuthFilter(chatRoom));
         ctx.addFilterDef(authDef);
         FilterMap authMap = new FilterMap();
         authMap.setFilterName("authFilter");
@@ -150,13 +159,23 @@ public final class Main {
         imageMessageServlet.addMapping("/api/messages/image");
         Tomcat.addServlet(ctx, "imageServlet", new ImageServlet(repository, imageStorage)).addMapping("/api/images/*");
         Tomcat.addServlet(ctx, "adminMessagesServlet", new AdminMessagesServlet(chatRoom))
-                .addMapping("/api/admin/messages/*");
+                .addMapping("/api/super-admin/messages/*");
         Tomcat.addServlet(ctx, "adminUsersServlet", new AdminUsersServlet(chatRoom, repository))
                 .addMapping("/api/admin/users/*");
+        Tomcat.addServlet(ctx, "roomSettingsServlet", new RoomSettingsServlet(chatRoom))
+                .addMapping("/api/admin/room");
+        Tomcat.addServlet(ctx, "roomServlet", new RoomServlet(chatRoom))
+                .addMapping("/api/room");
+        Tomcat.addServlet(ctx, "sensitiveWordsServlet", new SensitiveWordsServlet(chatRoom))
+                .addMapping("/api/super-admin/sensitive-words");
+        Tomcat.addServlet(ctx, "statisticsServlet", new StatisticsServlet(repository))
+                .addMapping("/api/super-admin/statistics");
         Wrapper aiSettingsServlet = Tomcat.addServlet(ctx, "aiSettingsServlet",
-                new AiSettingsServlet(repository, assistant));
+                new AiSettingsServlet(configStore, assistant, chatRoom));
         aiSettingsServlet.addMapping("/api/super-admin/ai/settings");
         aiSettingsServlet.addMapping("/api/super-admin/ai/settings/test");
+        Tomcat.addServlet(ctx, "aiStatusServlet", new AiStatusServlet(assistant))
+                .addMapping("/api/ai/status");
 
         tomcat.start();
         System.out.println("聊天室已启动: http://localhost:" + port
@@ -172,6 +191,11 @@ public final class Main {
     private static Path resolveUploadDirectory() {
         String configured = System.getenv("APP_UPLOAD_DIR");
         return configured == null || configured.isBlank() ? Path.of("uploads") : Path.of(configured);
+    }
+
+    private static Path resolveConfigDirectory() {
+        String configured = System.getenv("APP_CONFIG_DIR");
+        return configured == null || configured.isBlank() ? Path.of("config") : Path.of(configured);
     }
 
 /**

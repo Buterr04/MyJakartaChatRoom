@@ -8,9 +8,13 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Types;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -20,7 +24,7 @@ import site.buterr.chatroom.model.ChatImage;
 import site.buterr.chatroom.model.Message;
 import site.buterr.chatroom.model.Role;
 
-/** SQLite persistence for registered accounts and the bounded chat history. */
+/** SQLite persistence for registered accounts and the permanent chat history. */
 public final class ChatRepository {
 
     private final String jdbcUrl;
@@ -52,7 +56,7 @@ public final class ChatRepository {
     public Optional<Account> authenticate(String username, String password) {
         String sql = """
                 SELECT username, display_name, password_hash, role, muted_until, avatar
-                FROM accounts WHERE username = ? COLLATE NOCASE
+                FROM accounts WHERE username = ? COLLATE BINARY
                 """;
         try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, username);
@@ -64,6 +68,17 @@ public final class ChatRepository {
             }
         } catch (SQLException e) {
             throw new IllegalStateException("无法查询账户", e);
+        }
+    }
+
+    public void markLogin(String username) {
+        String sql = "UPDATE accounts SET last_login_at = ? WHERE username = ? COLLATE NOCASE";
+        try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, System.currentTimeMillis());
+            statement.setString(2, username);
+            statement.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法记录登录时间", e);
         }
     }
 
@@ -210,12 +225,74 @@ public final class ChatRepository {
     }
 
     public Message saveMessage(String type, String username, String displayName, String content,
-            long createdAt, int maxHistory) {
-        return saveMessage(type, username, displayName, content, createdAt, maxHistory, null);
+            long createdAt) {
+        return saveMessage(type, username, displayName, content, createdAt, null);
+    }
+
+    public List<Message> loadMessagesBefore(long beforeId, int limit) {
+        String sql = """
+                SELECT id, type, username, display_name, content, created_at,
+                       image_id, image_name, image_type, image_size
+                FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?
+                """;
+        List<Message> reversed = new ArrayList<>();
+        try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, beforeId);
+            statement.setInt(2, limit);
+            try (ResultSet result = statement.executeQuery()) {
+                while (result.next()) {
+                    reversed.add(readMessage(result));
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法加载更早的聊天记录", e);
+        }
+        List<Message> messages = new ArrayList<>(reversed.size());
+        for (int i = reversed.size() - 1; i >= 0; i--) {
+            messages.add(reversed.get(i));
+        }
+        return messages;
+    }
+
+    public List<Message> loadMessagesAfter(long afterId, int limit) {
+        String sql = """
+                SELECT id, type, username, display_name, content, created_at,
+                       image_id, image_name, image_type, image_size
+                FROM messages WHERE id > ? ORDER BY id ASC LIMIT ?
+                """;
+        List<Message> messages = new ArrayList<>();
+        try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, afterId);
+            statement.setInt(2, limit);
+            try (ResultSet result = statement.executeQuery()) {
+                while (result.next()) {
+                    messages.add(readMessage(result));
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法加载聊天记录", e);
+        }
+        return messages;
+    }
+
+    public Optional<Message> findMessage(long id) {
+        String sql = """
+                SELECT id, type, username, display_name, content, created_at,
+                       image_id, image_name, image_type, image_size
+                FROM messages WHERE id = ?
+                """;
+        try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, id);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? Optional.of(readMessage(result)) : Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法读取聊天消息", e);
+        }
     }
 
     public Message saveMessage(String type, String username, String displayName, String content,
-            long createdAt, int maxHistory, ChatImage image) {
+            long createdAt, ChatImage image) {
         try (Connection connection = connect()) {
             connection.setAutoCommit(false);
             try (PreparedStatement insert = connection.prepareStatement(
@@ -244,7 +321,6 @@ public final class ChatRepository {
                         throw new SQLException("消息未生成 id");
                     }
                     long id = keys.getLong(1);
-                    trimMessages(connection, maxHistory);
                     connection.commit();
                     return new Message(id, type, username, displayName, content, createdAt, image);
                 }
@@ -272,49 +348,168 @@ public final class ChatRepository {
         }
     }
 
-    public AiSettings loadAiSettings() {
+    public MessageStats loadMessageStats(LocalDate from, LocalDate to, ZoneId zone) {
+        long fromMillis = from.atStartOfDay(zone).toInstant().toEpochMilli();
+        long toMillis = to.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli();
+        LocalDate today = LocalDate.now(zone);
+        long todayStart = today.atStartOfDay(zone).toInstant().toEpochMilli();
+        long todayEnd = today.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli();
+        try (Connection connection = connect()) {
+            long todayCount;
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "SELECT COUNT(*) FROM messages WHERE type = 'chat' AND created_at >= ? AND created_at < ?")) {
+                statement.setLong(1, todayStart);
+                statement.setLong(2, todayEnd);
+                try (ResultSet result = statement.executeQuery()) {
+                    result.next();
+                    todayCount = result.getLong(1);
+                }
+            }
+
+            long totalCount;
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "SELECT COUNT(*) FROM messages WHERE type = 'chat'");
+                    ResultSet result = statement.executeQuery()) {
+                result.next();
+                totalCount = result.getLong(1);
+            }
+
+            long todayLoginCount;
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "SELECT COUNT(*) FROM accounts WHERE last_login_at >= ? AND last_login_at < ?")) {
+                statement.setLong(1, todayStart);
+                statement.setLong(2, todayEnd);
+                try (ResultSet result = statement.executeQuery()) {
+                    result.next();
+                    todayLoginCount = result.getLong(1);
+                }
+            }
+
+            long totalUsers;
+            try (PreparedStatement statement = connection.prepareStatement("SELECT COUNT(*) FROM accounts");
+                    ResultSet result = statement.executeQuery()) {
+                result.next();
+                totalUsers = result.getLong(1);
+            }
+
+            Map<String, Long> dailyCounts = new HashMap<>();
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT date(created_at / 1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS total
+                    FROM messages
+                    WHERE type = 'chat' AND created_at >= ? AND created_at < ?
+                    GROUP BY day
+                    ORDER BY day
+                    """)) {
+                statement.setLong(1, fromMillis);
+                statement.setLong(2, toMillis);
+                try (ResultSet result = statement.executeQuery()) {
+                    while (result.next()) {
+                        dailyCounts.put(result.getString("day"), result.getLong("total"));
+                    }
+                }
+            }
+            List<DailyCount> daily = new ArrayList<>();
+            for (LocalDate date = from; !date.isAfter(to); date = date.plusDays(1)) {
+                String key = date.toString();
+                daily.add(new DailyCount(key, dailyCounts.getOrDefault(key, 0L)));
+            }
+
+            List<UserMessageCount> activeUsers = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT username, display_name, COUNT(*) AS total
+                    FROM messages
+                    WHERE type = 'chat' AND username IS NOT NULL
+                      AND created_at >= ? AND created_at < ?
+                    GROUP BY username, display_name
+                    ORDER BY total DESC, username
+                    LIMIT 10
+                    """)) {
+                statement.setLong(1, todayStart);
+                statement.setLong(2, todayEnd);
+                try (ResultSet result = statement.executeQuery()) {
+                    while (result.next()) {
+                        activeUsers.add(new UserMessageCount(result.getString("username"),
+                                result.getString("display_name"), result.getLong("total")));
+                    }
+                }
+            }
+            return new MessageStats(todayCount, totalCount, activeUsers, daily, todayLoginCount, totalUsers);
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法统计消息", e);
+        }
+    }
+
+    public record DailyCount(String date, long count) {
+    }
+
+    public record UserMessageCount(String username, String displayName, long count) {
+    }
+
+    public record MessageStats(long todayCount, long totalCount, List<UserMessageCount> activeUsers,
+            List<DailyCount> daily, long todayLoginCount, long totalUsers) {
+    }
+
+    /** Legacy data for the one-time migration to local JSON files. */
+    public Optional<AiSettings> loadLegacyAiSettings() {
         String sql = """
                 SELECT base_url, api_key, model, enabled, system_prompt, updated_at
                 FROM ai_settings WHERE id = 1
                 """;
-        try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql);
-                ResultSet result = statement.executeQuery()) {
-            if (!result.next()) {
-                return AiSettings.empty();
+        try (Connection connection = connect()) {
+            if (!tableExists(connection, "ai_settings")) {
+                return Optional.empty();
             }
-            return new AiSettings(result.getString("base_url"), result.getString("api_key"),
-                    result.getString("model"), result.getInt("enabled") == 1,
-                    result.getString("system_prompt"), result.getLong("updated_at"));
+            try (PreparedStatement statement = connection.prepareStatement(sql);
+                    ResultSet result = statement.executeQuery()) {
+                if (!result.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new AiSettings(result.getString("base_url"), result.getString("api_key"),
+                        result.getString("model"), result.getInt("enabled") == 1,
+                        result.getString("system_prompt"), result.getLong("updated_at")));
+            }
         } catch (SQLException e) {
-            throw new IllegalStateException("无法读取 AI 配置", e);
+            throw new IllegalStateException("无法迁移 AI 配置", e);
         }
     }
 
-    public AiSettings saveAiSettings(String baseUrl, String apiKey, String model, boolean enabled,
-            String systemPrompt) {
-        long updatedAt = System.currentTimeMillis();
-        String sql = """
-                INSERT INTO ai_settings(id, base_url, api_key, model, enabled, system_prompt, updated_at)
-                VALUES (1, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    base_url = excluded.base_url,
-                    api_key = excluded.api_key,
-                    model = excluded.model,
-                    enabled = excluded.enabled,
-                    system_prompt = excluded.system_prompt,
-                    updated_at = excluded.updated_at
-                """;
-        try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, baseUrl);
-            statement.setString(2, apiKey);
-            statement.setString(3, model);
-            statement.setInt(4, enabled ? 1 : 0);
-            statement.setString(5, systemPrompt);
-            statement.setLong(6, updatedAt);
-            statement.executeUpdate();
-            return new AiSettings(baseUrl, apiKey, model, enabled, systemPrompt, updatedAt);
+    /** Legacy data for the one-time migration to local JSON files. */
+    public List<String> loadLegacySensitiveWords() {
+        String sql = "SELECT word FROM sensitive_words ORDER BY word COLLATE NOCASE";
+        try (Connection connection = connect()) {
+            if (!tableExists(connection, "sensitive_words")) {
+                return List.of();
+            }
+            try (PreparedStatement statement = connection.prepareStatement(sql);
+                    ResultSet result = statement.executeQuery()) {
+                List<String> words = new ArrayList<>();
+                while (result.next()) {
+                    words.add(result.getString("word"));
+                }
+                return words;
+            }
         } catch (SQLException e) {
-            throw new IllegalStateException("无法保存 AI 配置", e);
+            throw new IllegalStateException("无法迁移敏感词", e);
+        }
+    }
+
+    /** Called after configuration has been migrated to local files. */
+    public void dropLegacyConfigTables() {
+        try (Connection connection = connect(); Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DROP TABLE IF EXISTS ai_settings");
+            statement.executeUpdate("DROP TABLE IF EXISTS sensitive_words");
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法清理旧配置表", e);
+        }
+    }
+
+    private boolean tableExists(Connection connection, String table) throws SQLException {
+        String sql = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, table);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next();
+            }
         }
     }
 
@@ -328,7 +523,8 @@ public final class ChatRepository {
                         created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
                         role TEXT NOT NULL DEFAULT 'USER' CHECK(role IN ('USER', 'ADMIN')),
                         muted_until INTEGER NOT NULL DEFAULT 0,
-                        avatar TEXT
+                        avatar TEXT,
+                        last_login_at INTEGER NOT NULL DEFAULT 0
                     )
                     """);
             statement.executeUpdate("""
@@ -345,19 +541,9 @@ public final class ChatRepository {
                         image_size INTEGER
                     )
                     """);
-            statement.executeUpdate("""
-                    CREATE TABLE IF NOT EXISTS ai_settings (
-                        id INTEGER PRIMARY KEY CHECK(id = 1),
-                        base_url TEXT NOT NULL DEFAULT '',
-                        api_key TEXT NOT NULL DEFAULT '',
-                        model TEXT NOT NULL DEFAULT '',
-                        enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0, 1)),
-                        system_prompt TEXT NOT NULL DEFAULT '',
-                        updated_at INTEGER NOT NULL DEFAULT 0
-                    )
-                    """);
             migrateAccounts(connection);
             migrateMessages(connection);
+            statement.executeUpdate("CREATE INDEX IF NOT EXISTS idx_messages_type_created_at ON messages(type, created_at)");
             ensureAdministrator(connection);
             ensureDefaultAdministrator(connection);
         } catch (SQLException e) {
@@ -383,6 +569,9 @@ public final class ChatRepository {
             }
             if (!columns.contains("avatar")) {
                 statement.executeUpdate("ALTER TABLE accounts ADD COLUMN avatar TEXT");
+            }
+            if (!columns.contains("last_login_at")) {
+                statement.executeUpdate("ALTER TABLE accounts ADD COLUMN last_login_at INTEGER NOT NULL DEFAULT 0");
             }
         }
     }
@@ -469,13 +658,5 @@ public final class ChatRepository {
 
     private Connection connect() throws SQLException {
         return DriverManager.getConnection(jdbcUrl);
-    }
-
-    private void trimMessages(Connection connection, int maxHistory) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(
-                "DELETE FROM messages WHERE id NOT IN (SELECT id FROM messages ORDER BY id DESC LIMIT ?)")) {
-            statement.setInt(1, maxHistory);
-            statement.executeUpdate();
-        }
     }
 }

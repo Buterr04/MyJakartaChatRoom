@@ -29,7 +29,15 @@ public class ImageMessageServlet extends HttpServlet {
 
     @Override
     protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException, ServletException {
-        Part imagePart = req.getPart("image");
+        Part imagePart;
+        try {
+            imagePart = req.getPart("image");
+        } catch (IllegalStateException | ServletException e) {
+            // Tomcat rejects the part before getSize() when it exceeds the multipart limit.
+            JsonUtil.write(resp, HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE,
+                    Map.of("error", "图片不能超过 10MB"));
+            return;
+        }
         if (imagePart == null || imagePart.getSize() == 0) {
             JsonUtil.write(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "请选择要发送的图片"));
             return;

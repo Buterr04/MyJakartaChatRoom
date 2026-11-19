@@ -5,7 +5,7 @@ import UserAvatar from './UserAvatar.vue'
 const props = defineProps({
   me: { type: Object, required: true },
 })
-const emit = defineEmits(['close', 'updated', 'change-password'])
+const emit = defineEmits(['close', 'updated', 'change-password', 'logout'])
 
 const fileInput = ref(null)
 const saving = ref(false)
@@ -70,7 +70,17 @@ async function saveAvatar(avatar) {
       <p class="dialog-subtitle">查看账户资料、设置头像并修改登录密码</p>
 
       <div class="profile-summary">
-        <UserAvatar :user="me" class="profile-avatar" />
+        <button
+          type="button"
+          class="profile-avatar-button"
+          :disabled="saving"
+          title="更改头像"
+          aria-label="更改头像"
+          @click="chooseAvatar"
+        >
+          <UserAvatar :user="me" class="profile-avatar" />
+          <span class="profile-avatar-overlay">{{ saving ? '保存中…' : '更改头像' }}</span>
+        </button>
         <div>
           <h3>{{ me.displayName }}</h3>
           <span class="role-chip">{{ me.role === 'ADMIN' ? '管理员' : '用户' }}</span>
@@ -91,13 +101,10 @@ async function saveAvatar(avatar) {
           accept="image/png,image/jpeg,image/gif,image/webp"
           @change="avatarSelected"
         />
-        <button class="btn-primary" :disabled="saving" @click="chooseAvatar">
-          {{ saving ? '保存中…' : '更换头像' }}
-        </button>
         <button v-if="me.avatar" class="btn-secondary" :disabled="saving" @click="saveAvatar(null)">
           恢复默认
         </button>
-        <p>支持 PNG、JPEG、GIF、WebP，文件不超过 1MB。</p>
+        <p>点击头像更换；支持 PNG、JPEG、GIF、WebP，文件不超过 1MB。</p>
       </div>
       <p v-if="avatarError" class="form-error">{{ avatarError }}</p>
       <p v-else-if="avatarSuccess" class="form-success">{{ avatarSuccess }}</p>
@@ -108,6 +115,14 @@ async function saveAvatar(avatar) {
           <p>验证当前密码后，可设置新的登录密码。</p>
         </div>
         <button class="btn-secondary" @click="emit('change-password')">修改密码</button>
+      </div>
+
+      <div class="profile-logout">
+        <div>
+          <h3>退出登录</h3>
+          <p>退出后立即离线，下次需重新登录。</p>
+        </div>
+        <button class="btn-secondary" @click="emit('logout')">退出</button>
       </div>
     </section>
   </div>

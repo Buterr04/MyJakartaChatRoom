@@ -1,6 +1,7 @@
 package site.buterr.chatroom.servlet;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -38,13 +39,32 @@ public class AdminUsersServlet extends HttpServlet {
 
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        JsonUtil.write(resp, HttpServletResponse.SC_OK, Map.of("users", repository.listAccounts()));
+        Account actor = currentAccount(req);
+        if (actor == null) {
+            JsonUtil.write(resp, HttpServletResponse.SC_FORBIDDEN, Map.of("error", "需要管理员权限"));
+            return;
+        }
+        String self = actor.username();
+        List<Account> visible = repository.listAccounts().stream()
+                .filter(account -> !account.username().equalsIgnoreCase("Admin"))
+                .filter(account -> !account.username().equalsIgnoreCase(self))
+                .toList();
+        JsonUtil.write(resp, HttpServletResponse.SC_OK, Map.of("users", visible));
     }
 
     @Override
     protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        Account actor = currentAccount(req);
+        if (actor == null) {
+            JsonUtil.write(resp, HttpServletResponse.SC_FORBIDDEN, Map.of("error", "需要管理员权限"));
+            return;
+        }
         String pathInfo = req.getPathInfo();
         if (pathInfo != null && pathInfo.matches("/[^/]+/role")) {
+            if (!isSuperAdmin(actor)) {
+                JsonUtil.write(resp, HttpServletResponse.SC_FORBIDDEN, Map.of("error", "仅超级管理员可设置管理员"));
+                return;
+            }
             changeRole(req, resp, pathInfo.substring(1, pathInfo.length() - "/role".length()));
             return;
         }
@@ -53,6 +73,23 @@ public class AdminUsersServlet extends HttpServlet {
             return;
         }
         String username = pathInfo.substring(1, pathInfo.length() - "/mute".length());
+        Account target = repository.findAccount(username).orElse(null);
+        if (target == null) {
+            JsonUtil.write(resp, HttpServletResponse.SC_NOT_FOUND, Map.of("error", "账户不存在"));
+            return;
+        }
+        if (target.role() != Role.USER && !isSuperAdmin(actor)) {
+            JsonUtil.write(resp, HttpServletResponse.SC_FORBIDDEN, Map.of("error", "聊天室管理员只能禁言普通用户"));
+            return;
+        }
+        if ("Admin".equalsIgnoreCase(target.username())) {
+            JsonUtil.write(resp, HttpServletResponse.SC_FORBIDDEN, Map.of("error", "不能禁言超级管理员"));
+            return;
+        }
+        if (target.username().equalsIgnoreCase(actor.username())) {
+            JsonUtil.write(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "不能禁言自己"));
+            return;
+        }
         MuteBody body = JsonUtil.read(req, MuteBody.class);
         if (body == null || body.minutes() == null
                 || body.minutes() < 0 || body.minutes() > MAX_MUTE_MINUTES) {
@@ -67,6 +104,16 @@ public class AdminUsersServlet extends HttpServlet {
             return;
         }
         JsonUtil.write(resp, HttpServletResponse.SC_OK, Map.of("account", account.get()));
+    }
+
+    private Account currentAccount(HttpServletRequest req) {
+        Object username = req.getSession(false) == null ? null : req.getSession(false).getAttribute("username");
+        return username == null ? null : repository.findAccount(String.valueOf(username)).orElse(null);
+    }
+
+    private static boolean isSuperAdmin(Account account) {
+        return account != null && account.role() == Role.ADMIN
+                && "Admin".equalsIgnoreCase(account.username());
     }
 
     private void changeRole(HttpServletRequest req, HttpServletResponse resp, String username) throws IOException {

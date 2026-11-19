@@ -12,6 +12,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 
+import site.buterr.chatroom.store.ChatRoom;
 import site.buterr.chatroom.util.JsonUtil;
 
 /**
@@ -22,6 +23,12 @@ import site.buterr.chatroom.util.JsonUtil;
  */
 public class AuthFilter implements Filter {
 
+    private final ChatRoom chatRoom;
+
+    public AuthFilter(ChatRoom chatRoom) {
+        this.chatRoom = chatRoom;
+    }
+
     @Override
     public void doFilter(ServletRequest req, ServletResponse resp, FilterChain chain)
             throws IOException, ServletException {
@@ -29,7 +36,9 @@ public class AuthFilter implements Filter {
         HttpServletResponse response = (HttpServletResponse) resp;
         request.setCharacterEncoding("UTF-8");
 
-        if ("/api/login".equals(request.getServletPath()) || "/api/register".equals(request.getServletPath())) {
+        if ("/api/login".equals(request.getServletPath())
+                || "/api/register".equals(request.getServletPath())
+                || "/api/room".equals(request.getServletPath())) {
             chain.doFilter(req, resp);
             return;
         }
@@ -39,6 +48,18 @@ public class AuthFilter implements Filter {
         if (username == null) {
             JsonUtil.write(response, HttpServletResponse.SC_UNAUTHORIZED,
                     Map.of("error", "未登录或登录已过期"));
+            return;
+        }
+        // A forced login from another browser takes ownership of the account; the old
+        // session must lose REST access even before its WebSocket is closed.
+        if (chatRoom.isSessionRevoked(session.getId())) {
+            JsonUtil.write(response, HttpServletResponse.SC_UNAUTHORIZED,
+                    Map.of("error", "该账户已在其他设备登录"));
+            return;
+        }
+        if (!chatRoom.canUseSession(username, session.getId())) {
+            JsonUtil.write(response, HttpServletResponse.SC_UNAUTHORIZED,
+                    Map.of("error", "该账户已在其他设备登录"));
             return;
         }
         chain.doFilter(req, resp);

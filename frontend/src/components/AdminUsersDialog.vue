@@ -1,11 +1,13 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
+import ConfirmDialog from './ConfirmDialog.vue'
 import UserAvatar from './UserAvatar.vue'
 
 const props = defineProps({
   me: { type: Object, required: true },
   onlineUsers: { type: Array, required: true },
   refreshToken: { type: Number, required: true },
+  isSuperAdmin: { type: Boolean, default: false },
 })
 const emit = defineEmits(['close', 'updated', 'mute'])
 
@@ -13,7 +15,12 @@ const accounts = ref([])
 const loading = ref(true)
 const savingUsername = ref('')
 const error = ref('')
+const roleConfirm = ref(null)
 const onlineNames = computed(() => new Set(props.onlineUsers.map((user) => user.username.toLowerCase())))
+const visibleAccounts = computed(() => accounts.value.filter((account) => {
+  const username = account.username.toLowerCase()
+  return username !== 'admin' && username !== props.me.username.toLowerCase()
+}))
 
 onMounted(loadAccounts)
 watch(() => props.refreshToken, loadAccounts)
@@ -35,10 +42,17 @@ async function loadAccounts() {
   }
 }
 
-async function changeRole(account) {
+function changeRole(account) {
+  if (roleChangeDisabled(account)) return
   const nextRole = account.role === 'ADMIN' ? 'USER' : 'ADMIN'
-  const action = nextRole === 'ADMIN' ? '任命为管理员' : '取消管理员权限'
-  if (!window.confirm(`确定将 ${account.displayName} ${action}吗？`)) return
+  roleConfirm.value = { account, nextRole }
+}
+
+async function confirmChangeRole() {
+  const pending = roleConfirm.value
+  roleConfirm.value = null
+  if (!pending) return
+  const { account, nextRole } = pending
   savingUsername.value = account.username
   error.value = ''
   try {
@@ -72,6 +86,13 @@ function roleChangeDisabled(account) {
     || account.username.toLowerCase() === 'admin'
     || account.username.toLowerCase() === props.me.username.toLowerCase()
 }
+
+function canMute(account) {
+  if (account.username.toLowerCase() === props.me.username.toLowerCase()) return false
+  if (account.username.toLowerCase() === 'admin') return false
+  if (account.role === 'USER') return true
+  return props.isSuperAdmin
+}
 </script>
 
 <template>
@@ -81,15 +102,16 @@ function roleChangeDisabled(account) {
       <div class="admin-heading">
         <div>
           <h2 id="admin-title">用户管理</h2>
-          <p class="dialog-subtitle">管理全部注册账户的角色与禁言状态</p>
+          <p v-if="isSuperAdmin" class="dialog-subtitle">设置聊天室管理员，或禁言普通用户</p>
+          <p v-else class="dialog-subtitle">可禁言普通用户</p>
         </div>
-        <span class="count">{{ accounts.length }} 个账户</span>
+        <span class="count">{{ visibleAccounts.length }} 个账户</span>
       </div>
 
       <p v-if="error" class="form-error">{{ error }}</p>
       <div v-if="loading" class="admin-empty">正在加载用户…</div>
       <div v-else class="account-list">
-        <article v-for="account in accounts" :key="account.username" class="account-row">
+        <article v-for="account in visibleAccounts" :key="account.username" class="account-row">
           <UserAvatar :user="account" />
           <div class="account-info">
             <div class="account-name">
@@ -103,6 +125,7 @@ function roleChangeDisabled(account) {
           </span>
           <div class="account-actions">
             <button
+              v-if="isSuperAdmin"
               class="btn-secondary"
               :disabled="roleChangeDisabled(account)"
               :title="account.username.toLowerCase() === 'admin' ? '默认管理员不可取消权限' : ''"
@@ -111,8 +134,8 @@ function roleChangeDisabled(account) {
               {{ account.role === 'ADMIN' ? '取消管理员' : '任命为管理员' }}
             </button>
             <button
+              v-if="canMute(account)"
               class="btn-secondary"
-              :disabled="account.username.toLowerCase() === me.username.toLowerCase()"
               @click="emit('mute', account)"
             >
               {{ Number(account.mutedUntil || 0) > Date.now() ? '解除禁言' : '禁言' }}
@@ -120,7 +143,15 @@ function roleChangeDisabled(account) {
           </div>
         </article>
       </div>
-      <p class="admin-note">默认管理员 Admin 与当前登录账户不能被取消管理员权限。</p>
     </section>
+    <ConfirmDialog
+      v-if="roleConfirm"
+      title="角色变更"
+      :message="`确定将 ${roleConfirm.account.displayName} ${roleConfirm.nextRole === 'ADMIN' ? '任命为聊天室管理员' : '取消管理员权限'}吗？`"
+      :confirm-text="roleConfirm.nextRole === 'ADMIN' ? '任命' : '取消权限'"
+      :danger="roleConfirm.nextRole !== 'ADMIN'"
+      @confirm="confirmChangeRole"
+      @close="roleConfirm = null"
+    />
   </div>
 </template>

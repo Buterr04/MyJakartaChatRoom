@@ -24,8 +24,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 import site.buterr.chatroom.model.AiSettings;
 import site.buterr.chatroom.model.Message;
-import site.buterr.chatroom.store.ChatRepository;
 import site.buterr.chatroom.store.ChatRoom;
+import site.buterr.chatroom.store.LocalConfigStore;
 import site.buterr.chatroom.util.JsonUtil;
 
 public final class AiAssistantService implements AutoCloseable {
@@ -36,13 +36,13 @@ public final class AiAssistantService implements AutoCloseable {
     private static final int MAX_RESPONSE_BYTES = 1024 * 1024;
     private static final int MAX_REPLY_LENGTH = 4000;
 
-    private final ChatRepository repository;
+    private final LocalConfigStore configStore;
     private final ChatRoom chatRoom;
     private final HttpClient httpClient;
     private final ThreadPoolExecutor executor;
 
-    public AiAssistantService(ChatRepository repository, ChatRoom chatRoom) {
-        this.repository = repository;
+    public AiAssistantService(LocalConfigStore configStore, ChatRoom chatRoom) {
+        this.configStore = configStore;
         this.chatRoom = chatRoom;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
@@ -54,6 +54,10 @@ public final class AiAssistantService implements AutoCloseable {
                     thread.setDaemon(true);
                     return thread;
                 });
+    }
+
+    public boolean isEnabled() {
+        return configStore.loadAiSettings().enabled();
     }
 
     public void handleUserMessage(Message message) {
@@ -78,7 +82,7 @@ public final class AiAssistantService implements AutoCloseable {
     }
 
     public String testConnection() throws AiServiceException {
-        AiSettings settings = repository.loadAiSettings();
+        AiSettings settings = configStore.loadAiSettings();
         requireCompleteSettings(settings);
         List<Map<String, String>> messages = new ArrayList<>();
         addSystemPrompt(messages, settings.systemPrompt());
@@ -110,7 +114,7 @@ public final class AiAssistantService implements AutoCloseable {
 
     private void respond(List<Map<String, String>> context) {
         try {
-            AiSettings settings = repository.loadAiSettings();
+            AiSettings settings = configStore.loadAiSettings();
             if (!settings.enabled()) {
                 chatRoom.sendAssistantMessage("AI 助手尚未启用，请联系超级管理员 Admin。");
                 return;

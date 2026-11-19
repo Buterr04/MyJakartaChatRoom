@@ -11,6 +11,10 @@ import java.util.Base64;
 import java.util.List;
 import java.lang.reflect.Proxy;
 
+import jakarta.websocket.CloseReason;
+import jakarta.websocket.RemoteEndpoint;
+import jakarta.websocket.SendHandler;
+import jakarta.websocket.SendResult;
 import jakarta.websocket.Session;
 
 import org.junit.jupiter.api.DisplayName;
@@ -110,6 +114,30 @@ class ChatRoomTest {
         Message sent = room.sendChat("小明", "你去死吧，笨蛋！");
 
         assertEquals("你**吧，**！", sent.content());
+
+        Message variants = room.sendChat("小明", "FUCK ＦＵＣＫ 傻B 智障");
+        assertEquals("** ** ** **", variants.content());
+
+        Message obfuscated = room.sendChat("小明", "F U C K 傻 逼");
+        assertEquals("** **", obfuscated.content());
+    }
+
+    @Test
+    @DisplayName("管理员新增/删除敏感词立即生效")
+    void managedSensitiveWordsTakeEffect() {
+        ChatRepository repository = new ChatRepository(temporaryDirectory.resolve("managed-words.db"));
+        LocalConfigStore configStore = new LocalConfigStore(temporaryDirectory.resolve("managed-config"));
+        ChatRoom room = new ChatRoom(200, repository, null, configStore);
+        room.login("小明");
+        connect(room, room.login("小明"));
+
+        assertTrue(room.addSensitiveWord("广告词"));
+        Message filtered = room.sendChat("小明", "这是广告词");
+        assertEquals("这是**", filtered.content());
+
+        assertTrue(room.removeSensitiveWord("广告词"));
+        Message unfiltered = room.sendChat("小明", "这是广告词");
+        assertEquals("这是广告词", unfiltered.content());
     }
 
     @Test
@@ -269,5 +297,219 @@ class ChatRoomTest {
                 () -> room.bindWs(user, "session-2", webSocket()));
         assertTrue(room.webSocketRejection(user, "session-2").isPresent());
         assertTrue(room.webSocketRejection(user, "session-1").isEmpty());
+    }
+
+    @Test
+    @DisplayName("显式登出立即离线，不等 30 秒宽限期")
+    void explicitLogoutRemovesUserImmediately() throws Exception {
+        ChatRoom room = new ChatRoom(200, 60);
+        User user = room.login("小明");
+        room.bindWs(user, "session-1", webSocket());
+        assertEquals(1, room.onlineCount());
+
+        room.leave("小明", "session-1");
+
+        assertEquals(0, room.onlineCount());
+        assertTrue(room.webSocketRejection(user, "session-2").isEmpty());
+        assertTrue(room.historyAfter(0).stream()
+                .anyMatch(message -> message.content().contains("离开了聊天室")));
+
+        // An old grace timer must not remove a session that logged in again.
+        room.bindWs(room.login("小明"), "session-2", webSocket());
+        Thread.sleep(140);
+        assertEquals(1, room.onlineCount());
+    }
+
+    @Test
+    @DisplayName("强制登录会挤掉旧会话，未强制时拒绝")
+    void forceLoginTakesOverPreviousSession() {
+        ChatRoom room = new ChatRoom(200);
+        Account account = new Account("alice", "Alice", Role.USER, 0);
+        User first = room.login(account, "session-1", false);
+        room.bindWs(first, "session-1", webSocket());
+        assertEquals(1, room.onlineCount());
+
+        assertThrows(AlreadyOnlineException.class, () -> room.login(account, "session-2", false));
+        assertEquals(1, room.onlineCount());
+        assertTrue(room.isSessionOwner("alice", "session-1"));
+
+        User second = room.login(account, "session-2", true);
+
+        assertEquals(0, room.onlineCount());
+        assertTrue(room.isSessionOwner("alice", "session-2"));
+        assertFalse(room.isSessionOwner("alice", "session-1"));
+        assertTrue(room.isSessionRevoked("session-1"));
+        assertTrue(room.webSocketRejection(first, "session-1").isPresent());
+
+        room.bindWs(second, "session-2", webSocket());
+        assertEquals(1, room.onlineCount());
+
+        // Even after the new owner logs out, the kicked session stays revoked...
+        room.leave("alice", "session-2");
+        assertFalse(room.canUseSession("alice", "session-1"));
+
+        // ...until that same session authenticates again with the password (force login).
+        User relogin = room.login(account, "session-1", true);
+        assertTrue(room.canUseSession("alice", "session-1"));
+        room.bindWs(relogin, "session-1", webSocket());
+        assertEquals(1, room.onlineCount());
+    }
+
+    @Test
+    @DisplayName("同一会话切换账号会踢掉旧账号")
+    void sameSessionAccountSwitchKicksPreviousUser() {
+        ChatRoom room = new ChatRoom(200);
+        User alice = room.login(new Account("alice", "Alice", Role.USER, 0), "session-1", false);
+        room.bindWs(alice, "session-1", webSocket());
+        assertEquals(1, room.onlineCount());
+
+        User bob = room.login(new Account("bob", "Bob", Role.USER, 0), "session-1", false);
+
+        assertEquals(0, room.onlineCount());
+        assertFalse(room.isSessionOwner("alice", "session-1"));
+        assertTrue(room.isSessionOwner("bob", "session-1"));
+
+        room.bindWs(bob, "session-1", webSocket());
+        assertEquals(1, room.onlineCount());
+    }
+
+    @Test
+    @DisplayName("内存裁剪不影响数据库永久保留，旧消息仍可删除")
+    void oldMessageOutsideMemoryCanStillBeDeleted() {
+        Path database = temporaryDirectory.resolve("permanent.db");
+        ChatRepository repository = new ChatRepository(database);
+        ChatRoom room = new ChatRoom(2, repository);
+        User user = room.login("alice");
+        room.bindWs(user, "session-1", webSocket());
+        Message first = room.sendChat("alice", "one");
+        room.sendChat("alice", "two");
+        room.sendChat("alice", "three");
+
+        assertEquals(4, repository.loadRecentMessages(10).size());
+        assertTrue(room.deleteMessage(first.id()));
+        assertTrue(repository.findMessage(first.id()).isEmpty());
+        assertEquals(3, repository.loadRecentMessages(10).size());
+    }
+
+    @Test
+    @DisplayName("慢客户端落后超过 ring 容量会被 1013 断开")
+    void slowClientOverflowClosesConnection() throws Exception {
+        ChatRoom room = new ChatRoom(200);
+        SlowSocket slow = new SlowSocket();
+        User user = room.login("alice");
+        room.bindWs(user, "session-1", slow.session);
+
+        for (int i = 0; i < 130; i++) {
+            room.sendChat("alice", "m" + i);
+        }
+        Thread.sleep(300);
+        slow.release();
+        Thread.sleep(300);
+
+        assertTrue(slow.closeReason.get() != null);
+        assertEquals(1013, slow.closeReason.get().getCloseCode().getCode());
+    }
+
+    private static final class SlowSocket {
+        final java.util.concurrent.atomic.AtomicReference<CloseReason> closeReason =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        final Session session;
+        volatile SendHandler pending;
+        volatile boolean open = true;
+        volatile boolean autoComplete;
+
+        SlowSocket() {
+            session = (Session) Proxy.newProxyInstance(Session.class.getClassLoader(),
+                    new Class<?>[]{Session.class}, (proxy, method, arguments) -> {
+                        switch (method.getName()) {
+                            case "hashCode":
+                                return System.identityHashCode(proxy);
+                            case "equals":
+                                return proxy == arguments[0];
+                            case "toString":
+                                return "SlowSocket";
+                            case "getId":
+                                return "slow";
+                            case "isOpen":
+                                return open;
+                            case "getAsyncRemote":
+                                return asyncRemote();
+                            case "close":
+                                open = false;
+                                if (arguments != null && arguments.length > 0) {
+                                    closeReason.set((CloseReason) arguments[0]);
+                                }
+                                return null;
+                            default:
+                                if (method.getReturnType() == boolean.class) {
+                                    return false;
+                                }
+                                return null;
+                        }
+                    });
+        }
+
+        private Object asyncRemote() {
+            return Proxy.newProxyInstance(RemoteEndpoint.Async.class.getClassLoader(),
+                    new Class<?>[]{RemoteEndpoint.Async.class}, (proxy, method, arguments) -> {
+                        if (method.getName().equals("sendText") && arguments != null && arguments.length == 2) {
+                            SendHandler handler = (SendHandler) arguments[1];
+                            if (autoComplete) {
+                                handler.onResult(new SendResult());
+                            } else {
+                                pending = handler;
+                            }
+                            return null;
+                        }
+                        if (method.getName().equals("hashCode")) {
+                            return System.identityHashCode(proxy);
+                        }
+                        if (method.getName().equals("equals")) {
+                            return proxy == arguments[0];
+                        }
+                        if (method.getName().equals("toString")) {
+                            return "SlowAsyncRemote";
+                        }
+                        if (method.getReturnType() == boolean.class) {
+                            return false;
+                        }
+                        return null;
+                    });
+        }
+
+        void release() {
+            autoComplete = true;
+            SendHandler handler = pending;
+            pending = null;
+            if (handler != null) {
+                handler.onResult(new SendResult());
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("重连时从数据库刷新禁言状态")
+    void reconnectRefreshesMutedStateFromRepository() throws Exception {
+        Path database = temporaryDirectory.resolve("refresh.db");
+        ChatRepository repository = new ChatRepository(database);
+        repository.register("alice", "Alice", "password123");
+        Account account = repository.findAccount("alice").orElseThrow();
+        ChatRoom room = new ChatRoom(200, repository, 40);
+        User stale = room.login(account);
+
+        Session firstSocket = webSocket();
+        room.bindWs(stale, "session-1", firstSocket);
+        room.unbindWs(firstSocket);
+        // Grace 40ms: wait until the stale session user is no longer in onlineUsers.
+        Thread.sleep(100);
+        assertEquals(0, room.onlineCount());
+
+        long mutedUntil = System.currentTimeMillis() + 60_000;
+        room.setMutedUntil("alice", mutedUntil).orElseThrow();
+
+        room.bindWs(stale, "session-1", webSocket());
+
+        assertEquals(mutedUntil, room.onlineUsers().get(0).mutedUntil());
+        assertThrows(AccountMutedException.class, () -> room.sendChat("alice", "blocked"));
     }
 }

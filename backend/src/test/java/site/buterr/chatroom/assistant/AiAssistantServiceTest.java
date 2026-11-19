@@ -27,6 +27,7 @@ import site.buterr.chatroom.model.Role;
 import site.buterr.chatroom.model.Message;
 import site.buterr.chatroom.model.User;
 import site.buterr.chatroom.store.ChatRepository;
+import site.buterr.chatroom.store.LocalConfigStore;
 import site.buterr.chatroom.store.ChatRoom;
 
 class AiAssistantServiceTest {
@@ -41,6 +42,7 @@ class AiAssistantServiceTest {
 
     private HttpServer server;
     private ChatRepository repository;
+    private LocalConfigStore configStore;
     private ChatRoom chatRoom;
     private AiAssistantService assistant;
     private volatile int responseStatus = 200;
@@ -62,8 +64,9 @@ class AiAssistantServiceTest {
         });
         server.start();
         repository = new ChatRepository(temporaryDirectory.resolve("ai.db"));
+        configStore = new LocalConfigStore(temporaryDirectory.resolve("config"));
         chatRoom = new ChatRoom(200, repository);
-        assistant = new AiAssistantService(repository, chatRoom);
+        assistant = new AiAssistantService(configStore, chatRoom);
     }
 
     @AfterEach
@@ -137,7 +140,7 @@ class AiAssistantServiceTest {
     }
 
     private void saveSettings(boolean enabled) {
-        repository.saveAiSettings("http://" + server.getAddress().getHostString() + ":"
+        configStore.saveAiSettings("http://" + server.getAddress().getHostString() + ":"
                 + server.getAddress().getPort() + "/v1", "test-secret", "test-model", enabled, "友善地简洁回答");
     }
 

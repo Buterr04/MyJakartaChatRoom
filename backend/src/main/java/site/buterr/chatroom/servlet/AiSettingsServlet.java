@@ -12,7 +12,8 @@ import jakarta.servlet.http.HttpServletResponse;
 import site.buterr.chatroom.assistant.AiAssistantService;
 import site.buterr.chatroom.assistant.AiServiceException;
 import site.buterr.chatroom.model.AiSettings;
-import site.buterr.chatroom.store.ChatRepository;
+import site.buterr.chatroom.store.ChatRoom;
+import site.buterr.chatroom.store.LocalConfigStore;
 import site.buterr.chatroom.util.JsonUtil;
 
 public class AiSettingsServlet extends HttpServlet {
@@ -22,17 +23,19 @@ public class AiSettingsServlet extends HttpServlet {
             String systemPrompt) {
     }
 
-    private final ChatRepository repository;
+    private final LocalConfigStore configStore;
     private final AiAssistantService assistant;
+    private final ChatRoom chatRoom;
 
-    public AiSettingsServlet(ChatRepository repository, AiAssistantService assistant) {
-        this.repository = repository;
+    public AiSettingsServlet(LocalConfigStore configStore, AiAssistantService assistant, ChatRoom chatRoom) {
+        this.configStore = configStore;
         this.assistant = assistant;
+        this.chatRoom = chatRoom;
     }
 
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        JsonUtil.write(resp, HttpServletResponse.SC_OK, settingsResponse(repository.loadAiSettings()));
+        JsonUtil.write(resp, HttpServletResponse.SC_OK, settingsResponse(configStore.loadAiSettings()));
     }
 
     @Override
@@ -64,14 +67,15 @@ public class AiSettingsServlet extends HttpServlet {
                     Map.of("error", "接口地址、API Key 或系统提示词过长"));
             return;
         }
-        AiSettings current = repository.loadAiSettings();
+        AiSettings current = configStore.loadAiSettings();
         if (Boolean.TRUE.equals(body.clearApiKey())) {
             apiKey = "";
         } else if (apiKey.isEmpty()) {
             apiKey = current.apiKey();
         }
-        AiSettings saved = repository.saveAiSettings(baseUrl, apiKey, model,
+        AiSettings saved = configStore.saveAiSettings(baseUrl, apiKey, model,
                 Boolean.TRUE.equals(body.enabled()), systemPrompt);
+        chatRoom.broadcastAiStatus(saved.enabled());
         JsonUtil.write(resp, HttpServletResponse.SC_OK, settingsResponse(saved));
     }
 

@@ -20,7 +20,7 @@ import site.buterr.chatroom.util.JsonUtil;
 /**
  * 消息接口：
  * <ul>
- *   <li>GET /api/messages?after={id} —— 拉取历史消息，after 为增量拉取游标</li>
+ *   <li>GET /api/messages?limit=50 / before={id} / after={id} —— 历史分页（数据库永久保留）</li>
  *   <li>POST /api/messages —— 发送一条消息（命令走 REST，下行推送走 WebSocket）</li>
  * </ul>
  */
@@ -42,13 +42,42 @@ public class MessagesServlet extends HttpServlet {
 
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        long after;
+        int limit;
         try {
-            after = Long.parseLong(req.getParameter("after"));
+            limit = Integer.parseInt(req.getParameter("limit") == null ? "50" : req.getParameter("limit"));
         } catch (NumberFormatException e) {
-            after = 0;
+            JsonUtil.write(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "limit 不合法"));
+            return;
         }
-        JsonUtil.write(resp, HttpServletResponse.SC_OK, Map.of("messages", chatRoom.historyAfter(after)));
+        if (limit < 1 || limit > 200) {
+            JsonUtil.write(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "limit 需要在 1~200 之间"));
+            return;
+        }
+
+        String afterParam = req.getParameter("after");
+        String beforeParam = req.getParameter("before");
+        boolean hasAfter = afterParam != null && !afterParam.isBlank();
+        boolean hasBefore = beforeParam != null && !beforeParam.isBlank();
+        if (hasAfter && hasBefore) {
+            JsonUtil.write(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "before 与 after 不能同时使用"));
+            return;
+        }
+
+        ChatRoom.MessagePage page;
+        try {
+            if (hasAfter) {
+                page = chatRoom.messagesAfter(Long.parseLong(afterParam), limit);
+            } else if (hasBefore) {
+                page = chatRoom.messagesBefore(Long.parseLong(beforeParam), limit);
+            } else {
+                page = chatRoom.latestMessages(limit);
+            }
+        } catch (NumberFormatException e) {
+            JsonUtil.write(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "消息游标不合法"));
+            return;
+        }
+        JsonUtil.write(resp, HttpServletResponse.SC_OK,
+                Map.of("messages", page.messages(), "hasMore", page.hasMore()));
     }
 
     @Override

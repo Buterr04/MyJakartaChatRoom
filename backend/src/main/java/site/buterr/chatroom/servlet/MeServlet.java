@@ -10,6 +10,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 
 import site.buterr.chatroom.model.Account;
+import site.buterr.chatroom.model.User;
 import site.buterr.chatroom.store.ChatRepository;
 import site.buterr.chatroom.util.JsonUtil;
 
@@ -35,6 +36,10 @@ public class MeServlet extends HttpServlet {
         }
         session.setAttribute("role", account.get().role().name());
         session.setAttribute("mutedUntil", account.get().mutedUntil());
+        Object current = session.getAttribute("chatUser");
+        long loginAt = current instanceof User user ? user.loginAt() : System.currentTimeMillis();
+        session.setAttribute("chatUser", new User(account.get().username(), account.get().displayName(),
+                account.get().role(), account.get().mutedUntil(), loginAt, account.get().avatar()));
         JsonUtil.write(resp, HttpServletResponse.SC_OK, account.get());
     }
 }

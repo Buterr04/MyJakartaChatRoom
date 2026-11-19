@@ -33,7 +33,7 @@ public class SuperAdminFilter implements Filter {
         Account account = username == null ? null : repository.findAccount(username).orElse(null);
         if (account == null || account.role() != Role.ADMIN || !"Admin".equalsIgnoreCase(account.username())) {
             JsonUtil.write((HttpServletResponse) resp, HttpServletResponse.SC_FORBIDDEN,
-                    Map.of("error", "仅超级管理员 Admin 可维护 AI 配置"));
+                    Map.of("error", "仅超级管理员 Admin 可执行此操作"));
             return;
         }
         chain.doFilter(req, resp);

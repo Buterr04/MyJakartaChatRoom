@@ -46,7 +46,7 @@
                           └────────────────────────────────────────────────┘
 ```
 
-架构一句话概括：**命令走 REST（request/response，状态码明确），事件走 WebSocket（服务端主动推送）**。`ChatRoom` 的在线名单由 `/ws/chat` 连接状态派生，同时管理消息历史和广播；`ChatRepository` 将账户、AI 配置及最近 200 条消息保存到 SQLite，`ImageStorage` 将聊天图片按 UUID 文件名保存到本地上传目录；重启只恢复账户、消息、图片元数据和 AI 配置，不恢复在线状态。
+架构一句话概括：**命令走 REST（request/response，状态码明确），事件走 WebSocket（服务端主动推送）**。`ChatRoom` 的在线名单由 `/ws/chat` 连接状态派生，同时管理内存热窗口和广播；`ChatRepository` 将账户及**全部**消息永久保存到 SQLite，`LocalConfigStore` 将敏感词与 AI 配置保存到 `config/*.json`，`ImageStorage` 将聊天图片按 UUID 文件名保存到本地上传目录；重启恢复账户、消息、图片元数据、敏感词和 AI 配置，不恢复在线状态。
 
 ### 1.2 技术选型与理由
 
@@ -123,14 +123,25 @@ cd frontend && npm run dev
 | `APP_STATIC_DIR` | 自动探测 | 静态资源目录；显式指定后跳过探测 |
 | `APP_DB_PATH` | `chatroom.db` | SQLite 文件路径，相对于后端启动时的工作目录 |
 | `APP_UPLOAD_DIR` | `uploads` | 聊天图片与 multipart 临时文件目录，相对于后端启动目录 |
+| `APP_CONFIG_DIR` | `config` | `sensitive-words.json` 与 `ai-settings.json` 目录；后者含 API Key，已被 `.gitignore` 忽略 |
 
-### 3.4 AI 助手配置
+### 3.4 角色与后台入口
 
-AI 配置不通过环境变量管理。使用内置 `Admin` 登录后打开“AI 设置”，保存接口地址、模型、API Key、系统提示词和启用状态，再点击“测试已保存配置”。普通管理员和用户访问 `/api/super-admin/*` 都会收到 403。
+| 角色 | 判定 | 能力 |
+| --- | --- | --- |
+| 普通用户 `USER` | 默认 | 聊天、@AI、查看历史 |
+| 聊天室管理员 `ADMIN` | 由 `Admin` 任命 | 「用户管理」里只有普通用户禁言；不能改角色、删消息、管敏感词/AI |
+| 超级管理员 `Admin` | 用户名 `Admin` 且角色 ADMIN | 任命/取消聊天室管理员、删消息、敏感词、AI 配置；可禁言聊天室管理员 |
 
-接口采用非流式 `POST {baseUrl}/chat/completions`；若地址已经以 `/chat/completions` 结尾则不重复拼接。API Key 通过 `Authorization: Bearer ...` 发送，无认证需求的本地接口可以留空。密钥只存于 SQLite 的 `ai_settings` 表，配置查询响应不包含密钥本身。
+`AdminFilter` 只判 `role=ADMIN`；`AdminUsersServlet` 内再细分角色变更和禁言目标。删除消息、敏感词、AI 都挂在 `/api/super-admin/*`，由 `SuperAdminFilter` 保护。
 
-### 3.5 常用命令速查
+### 3.5 AI 助手配置
+
+AI 配置不通过环境变量管理。使用内置 `Admin` 登录后打开“AI 设置”，保存接口地址、模型、API Key、系统提示词和启用状态，再点击“测试已保存配置”。聊天室管理员和普通用户访问 `/api/super-admin/*` 都会收到 403。
+
+接口采用非流式 `POST {baseUrl}/chat/completions`；若地址已经以 `/chat/completions` 结尾则不重复拼接。API Key 通过 `Authorization: Bearer ...` 发送，无认证需求的本地接口可以留空。密钥与配置写入 `config/ai-settings.json`，配置查询响应不包含密钥本身；该目录已被 `.gitignore` 忽略。
+
+### 3.6 常用命令速查
 
 ```bash
 mvn test                              # 跑后端单元测试
@@ -178,7 +189,7 @@ site.buterr.chatroom
 │   ├── AiSettingsServlet    # Admin 查询/保存 AI 配置并测试连接
 │   ├── ImageMessageServlet  # POST /api/messages/image（multipart）
 │   ├── ImageServlet         # GET  /api/images/{id}
-│   ├── AdminMessagesServlet # DELETE /api/admin/messages/{id}
+│   ├── AdminMessagesServlet # DELETE /api/super-admin/messages/{id}（超级管理员）
 │   └── AdminUsersServlet    # GET 用户列表；POST 禁言或更新角色
 ├── filter
 │   ├── AuthFilter           # /api/* 登录态守卫（放行注册与登录）
@@ -275,7 +286,7 @@ tomcat.getServer().await();
     │                          │                                       │
     │ POST /api/messages ──────▶│ sendChat("alice","你好")              │
     │                          │   敏感词过滤 → SQLite 保存 → 广播       │
-    │                          │   broadcaster 入队 → 串行发送          │
+    │                          │   broadcaster → 全局 ring → 每连接 cursor │
     │◀── 201 {message} ────────│                                       │
     │◀── {type:"message"} ─────────────────────────────────────────────▶│
     │  （自己的消息也回显，      │                                       │
@@ -305,44 +316,43 @@ POST /api/logout ──▶ session.invalidate() ──┐
 private final Map<String, User> onlineUsers = new ConcurrentHashMap<>();       // 用户名 → 用户
 private final List<Message> history = new ArrayList<>();                       // 由 synchronized(this) 保护
 private final Map<String, Set<Session>> wsByHttpSession = new ConcurrentHashMap<>(); // 会话id → WS连接集合
-private final Map<Session, Queue<String>> outbound = new ConcurrentHashMap<>(); // 每连接出站队列
-private final Set<Session> draining = ConcurrentHashMap.newKeySet();            // 正在发送链上的连接
+private final AtomicReferenceArray<Frame> outboundRing = new AtomicReferenceArray<>(128); // 全局消息 ring
+private final AtomicLong publishedSeq = new AtomicLong();                      // ring 发布序号
+private final Map<Session, ClientCursor> cursors = new ConcurrentHashMap<>();  // 每连接 cursor
 private final AtomicLong idGen = new AtomicLong(1);                            // 消息 id 发号器
 private final ExecutorService broadcaster = /* 单守护线程 "chat-broadcaster" */;
 ```
 
-并发设计三条规则：
+并发设计四条规则：
 
 1. **所有对 `history`、`onlineUsers` 和连接映射的变更都在 `synchronized(this)` 内**；在线状态只由 WebSocket 连接变更修改；
-2. **所有下行推送都提交给单线程 `broadcaster`**：提交顺序 = 消息 id 顺序 = 每个连接的接收顺序；
-3. **连接注册表、出站队列等纯并发容器不加粗锁**，读写各自安全。
+2. **所有消息帧都提交给单线程 `broadcaster`**：序列化一次 → 写全局 ring → 发布 seq；
+3. **每个连接一个 cursor**：只有上一条 `sendText` 回调成功后才发下一条；`online` / `accountUpdated` 合并为最新状态，不逐条入 ring；
+4. **连接注册表、ring、cursor 等纯并发容器不加粗锁**，读写各自安全。
 
-#### 广播链路：为什么需要出站队列
+#### 广播链路：全局 ring + 每连接 cursor
 
-Tomcat 的 `RemoteEndpoint.Async` **不允许同一连接上重叠写入**——上一条消息还没写完就调 `sendText` 会抛 `IllegalStateException: TEXT_FULL_WRITING`（本项目的真实 bug，测试发现）。因此：
+Tomcat 的 `RemoteEndpoint.Async` **不允许同一连接上重叠写入**——上一条消息还没写完就调 `sendText` 会抛 `IllegalStateException: TEXT_FULL_WRITING`。因此每条连接仍然严格串行，但队列从“每连接一份”改成“全局 128 帧 + 游标”：
 
 ```java
-// 广播线程只入队
-private void enqueue(Session ws, String json) {
-    if (!ws.isOpen()) return;
-    outbound.computeIfAbsent(ws, k -> new ConcurrentLinkedQueue<>()).add(json);
-    flush(ws);
-}
+// broadcaster：序列化一次，写 ring，发布序号
+String json = JsonUtil.toJson(payload);
+long seq = publishedSeq.get() + 1;
+outboundRing.set((int) (seq % 128), new Frame(seq, json));
+publishedSeq.set(seq);
+cursors.values().forEach(ClientCursor::signal);
 
-private void flush(Session ws) {
-    if (!draining.add(ws)) return;   // 该连接已有发送链，链尾会取走新消息
-    sendNext(ws);
-}
-
-private void sendNext(Session ws) {
-    ...
-    String next = queue.poll();
-    if (next == null) { /* 收尾 + 竞态兜底 */ return; }
-    ws.getAsyncRemote().sendText(next, result -> sendNext(ws));  // 回调链串行发送
-}
+// cursor：落后检测 + 单条在飞
+if (publishedSeq.get() - nextSeq + 1 > 128) close(1013, "发送积压");
+Frame frame = outboundRing.get((int) (nextSeq % 128));
+if (frame == null || frame.seq() != nextSeq) close(1013, "发送积压");
+nextSeq++;
+ws.getAsyncRemote().sendText(frame.json(), result -> drain());
 ```
 
-这样单条消息在任意连接上**严格串行**，慢客户端只会让自己的队列变长，不阻塞其他连接。`flush`/`sendNext` 之间用 `draining` 集合防止出现两条并行发送链，"收尾与入队竞态"用二次检查兜底。
+- 快客户端按 seq 顺序读；慢客户端落后超过 128 帧，直接 `1013` 断开，重连后拉历史补全；
+- `online` 只保留最新快照，`accountUpdated` 按用户名合并，避免状态帧挤占 ring；
+- 慢客户端不会阻塞 broadcaster，也不会无限占内存。
 
 #### ChatConfigurator：握手期拿到 HTTP 会话
 
@@ -379,16 +389,16 @@ public void sessionDestroyed(HttpSessionEvent se) {
 }
 ```
 
-注意：**登录不等于在线**。`login` 只做认证并准备 `User`；`bindWs` 时才写入 `onlineUsers`。同一 HTTP 会话可开多个标签页，但只算一个在线用户；断开最后一个标签页连接立即离线。另一个 HTTP 会话尝试连接同名账户会被拒绝。
+注意：**登录不等于在线**。`login` 只做认证并准备 `User`；`bindWs` 时才写入 `onlineUsers`。同一 HTTP 会话可开多个标签页，但只算一个在线用户；断开最后一个标签页连接进入 30 秒宽限，**显式登出立即离线**。另一个 HTTP 会话默认被 409 拒绝，带 `force=true` 登录则接管账户并踢掉旧会话。
 
 ### 4.5 线程模型一览
 
 | 线程 | 执行的代码 | 需要注意 |
 | --- | --- | --- |
 | Tomcat NIO 请求线程 | Filter / Servlet / `ChatRoom` 写操作 | `history` 写操作持 `this` 锁 |
-| `chat-broadcaster`（单守护线程） | `toJson` + 出队入队（`enqueue`） | 只入队不发送，保证顺序 |
+| `chat-broadcaster`（单守护线程） | `toJson` + 写全局 ring + 发布 seq | 只写 ring 不发送，保证顺序；慢客户端不阻塞 |
 | Tomcat WS 容器线程 | `@OnOpen/@OnClose/@OnError` | `bindWs` / `unbindWs` 操作并发容器 |
-| SendHandler 回调线程 | `sendNext` 逐条发送 | 每连接最多一条发送链（`draining` 保证） |
+| SendHandler 回调线程 | `ClientCursor.drain` 逐条发送 | 每连接一个 cursor，单条在飞；落后 128 帧断 1013 |
 | 容器会话回收线程 | `sessionDestroyed` → `leave` | 先关 WS 再删用户 |
 | `ai-assistant`（单守护线程） | 读取 AI 配置、调用上游、保存并广播回复 | 队列上限 16；网络请求不持 `ChatRoom` 锁 |
 
@@ -406,25 +416,31 @@ public void sessionDestroyed(HttpSessionEvent se) {
 
 所有接口同源（生产模式与后端同端口；开发模式经 Vite 代理）。除 `/api/register` 与 `/api/login` 外都需要有效会话，否则 401；`/api/admin/*` 还要求 `ADMIN` 角色，`/api/super-admin/*` 额外要求内置用户名 `Admin`，否则 403。
 
-每次启动都会确保存在默认管理员 `Admin`（初始密码 `admin`），普通注册账户均为 `USER`。旧版数据库启动时通过 `PRAGMA table_info` 检测并补充账户资料列及消息的 `image_id`、`image_name`、`image_type`、`image_size` 列，已有账户与消息不会删除。头像以 Data URL 保存；聊天图片则校验文件签名后写入 `APP_UPLOAD_DIR`，消息仅保存元数据。删除图片消息或裁剪历史时同步清理元数据和本地文件，`AdminFilter` 每次按数据库最新角色鉴权。
+每次启动都会确保存在默认管理员 `Admin`（初始密码 `admin`），普通注册账户均为 `USER`。旧版数据库启动时通过 `PRAGMA table_info` 检测并补充账户资料列及消息的 `image_id`、`image_name`、`image_type`、`image_size` 列，已有账户与消息不会删除；旧 `ai_settings` / `sensitive_words` 表会一次性迁移到 `APP_CONFIG_DIR` 下的 JSON 后删除。头像以 Data URL 保存；聊天图片则校验文件签名后写入 `APP_UPLOAD_DIR`，消息仅保存元数据。删除图片消息时同步清理元数据和本地文件；内存热窗口裁剪不再删除数据库仍保留的图片，`AdminFilter` 每次按数据库最新角色鉴权。
 
 | 方法 | 路径 | 请求体 | 成功响应 | 失败 |
 | --- | --- | --- | --- | --- |
 | POST | `/api/register` | `{"username":"alice","displayName":"小明","password":"..."}` | `201` 账户资料（不含密码信息） | `400` 校验失败；`409` 用户名已存在 |
-| POST | `/api/login` | `{"username":"alice","password":"..."}` | `200` 登录用户资料（含 `role`、`mutedUntil`） + Set-Cookie | `400` 缺少字段；`401` 凭据错误 |
+| POST | `/api/login` | `{"username":"alice","password":"...","force":false}` | `200` 登录用户资料（含 `role`、`mutedUntil`） + Set-Cookie | `400` 缺少字段；`401` 凭据错误；`409` 已在其他设备登录（`code=already_online`，可用 `force=true` 接管） |
 | GET | `/api/me` | — | `200` 最新账户公开资料（含角色与禁言状态） | `401` |
+| GET | `/api/websocket-status` | — | `200` `{"ok":true}` | `401` 未登录；`409` 已被其他连接占用 |
 | PUT | `/api/me/avatar` | `{"avatar":"data:image/png;base64,..."}`，null/空串恢复默认 | `200` 最新账户资料 | `400` 图片格式或大小错误；`401` |
 | PUT | `/api/me/password` | `{"currentPassword":"...","newPassword":"..."}`，新密码长度 8~128 个字符 | `200` `{"ok":true}`，当前会话保持有效 | `400` 当前密码错误或新密码格式不合法；`401` |
-| POST | `/api/logout` | — | `200` `{"ok":true}`（并触发离场广播） | — |
+| POST | `/api/logout` | — | `200` `{"ok":true}`（立即移除在线用户并广播离场） | — |
 | GET | `/api/users` | — | `200` `{"count":2,"users":[User...]}`（按登录时间排序） | `401` |
-| GET | `/api/messages?after={id}` | — | `200` `{"messages":[Message...]}`；`after>0` 时只返回 id 更大的增量 | `401` |
+| GET | `/api/messages?limit=50`、`?before={id}`、`?after={id}` | — | `200` `{"messages":[...],"hasMore":bool}`；默认最新 50，limit 1~200 | `400` 参数错误；`401` |
 | POST | `/api/messages` | `{"content":"..."}` | `201` `{"message":Message}` | `400` 空/超 500 字符；`401`；`403` 禁言 |
 | POST | `/api/messages/image` | multipart/form-data，文件字段 `image`，最大 10MB | `201` `{"message":Message}` | `400` 非支持图片；`401`；`403` 禁言；`413` 超限 |
 | GET | `/api/images/{id}` | — | `200` 原始图片字节，带正确 MIME 与 `nosniff` | `401`；`404` 元数据或文件不存在 |
-| DELETE | `/api/admin/messages/{id}` | — | `200` `{"deletedId":3}` | `401`；`403` 非管理员；`404` 消息不存在或为系统消息 |
-| POST | `/api/admin/users/{username}/mute` | `{"minutes":10}`，0~10080，0 表示解禁 | `200` `{"account":Account}` | `400` 参数错误；`401`；`403`；`404` 账户不存在 |
-| GET | `/api/admin/users` | — | `200` `{"users":[Account...]}` | `401`；`403` |
-| POST | `/api/admin/users/{username}/role` | `{"role":"ADMIN"}` 或 `{"role":"USER"}` | `200` `{"account":Account}` | `400` 参数错误或尝试取消默认/当前管理员；`401`；`403`；`404` |
+| DELETE | `/api/super-admin/messages/{id}` | — | `200` `{"deletedId":3}` | `401`；`403` 非超级管理员；`404` 消息不存在或为系统消息 |
+| POST | `/api/admin/users/{username}/mute` | `{"minutes":10}`，0~10080，0 表示解禁；只能普通用户 | `200` `{"account":Account}` | `400` 参数错误/自己；`401`；`403` 非管理员或目标非普通用户；`404` |
+| GET | `/api/admin/users` | 管理员 / 超级管理员；隐藏 Admin 与当前账户 | `200` `{"users":[Account...]}` | `401`；`403` |
+| GET | `/api/room` | 公开 | `200` `{"room":{name,icon,updatedAt}}` | — |
+| PUT | `/api/admin/room` | `{"name":"...","icon":"emoji 或 Data URL"}` | `200` `{"room":...}` | `400` 长度/图标不合法；`401`；`403` |
+| GET | `/api/ai/status` | 已登录用户 | `200` `{"enabled":boolean}` | `401` |
+| POST | `/api/admin/users/{username}/role` | `{"role":"ADMIN"}` 或 `{"role":"USER"}`，仅超级管理员 | `200` `{"account":Account}` | `400` 参数错误或尝试取消默认/当前管理员；`401`；`403`；`404` |
+| GET/POST/DELETE | `/api/super-admin/sensitive-words` | 仅超级管理员；GET 列表；POST `{"word":"..."}`；DELETE `?word=...` | `200/201` `{"words":[string...]}` | `400` 长度/空值；`409` 重复；`404` 不存在 |
+| GET | `/api/super-admin/statistics?from=&to=&granularity=` | 仅超级管理员；`day/week/month`；排除 system | `200` 今日/总数/登录占比/TOP10/柱状序列 | `400` 日期/粒度错误；`401`；`403` |
 | GET | `/api/super-admin/ai/settings` | — | `200` 配置公开字段 + `hasApiKey`，不含 API Key | `401`；`403` |
 | PUT | `/api/super-admin/ai/settings` | `baseUrl`、`model`、`apiKey`、`enabled`、`systemPrompt`、`clearApiKey` | `200` 最新公开配置 | `400` 参数错误；`401`；`403` |
 | POST | `/api/super-admin/ai/settings/test` | — | `200` `{"message":"连接成功","reply":"..."}` | `401`；`403`；`502` 上游错误 |
@@ -465,8 +481,8 @@ curl -s -b a.jar -F 'image=@pixel.png;type=image/png' localhost:8080/api/message
 
 时序约定（前端依赖）：
 
-1. 客户端**先连 WS，再拉 REST 历史**——两条消息之间没有空窗：拉取之后产生的新消息必经 WS 推送到达；
-2. WebSocket 连接建立时才加入 `onlineUsers`；同一 HTTP 会话的多个标签页只算一人，断开最后一个连接立即离线。另一个 HTTP 会话连接同一账户会被 1008 关闭。
+1. 客户端**先连 WS，历史按需拉**：登录后默认不加载历史，用户向上滑/点按钮才取最近 50 条；之后到顶用 `before` 分页，重连只对已加载历史用 `after` 补增量；
+2. WebSocket 连接建立时才加入 `onlineUsers`；同一 HTTP 会话的多个标签页只算一人，断开最后一个连接后 30 秒宽限，显式登出立即离线。另一个 HTTP 会话默认被拒绝，`force=true` 登录会接管并踢掉旧会话。
 
 ## 7. 前端架构详解
 
@@ -523,7 +539,7 @@ App.vue
 
 输入区的“图片”按钮使用 multipart 直接发送文件，不经过 Base64。图片消息复用普通消息的持久化与 WebSocket 广播链路，前端根据 `message.image` 渲染内嵌图片，点击在新标签页查看原图；禁言或上传中时不能发送。
 
-管理员在消息上看到删除按钮，在其他在线用户旁看到禁言/解禁按钮。按钮可见性只负责界面展示，真正的权限校验由 `AdminFilter` 完成。`messageDeleted` 会从所有客户端移除消息；`accountUpdated` 会同步在线名单和当前用户的禁言状态，解禁或到期后输入框恢复可用。
+管理员在消息上看到删除按钮（仅超级管理员），在「用户管理」和在线列表对其他普通用户看到禁言/解禁按钮（聊天室管理员也可用）。在线用户列表对普通用户/聊天室管理员隐藏 `Admin`，`Admin` 自己可以看到自己。按钮可见性只负责界面展示，真正的权限校验由 `AdminFilter` / `SuperAdminFilter` 与 `AdminUsersServlet` 完成。`messageDeleted` 会从所有客户端移除消息；`accountUpdated` 会同步在线名单和当前用户的禁言状态，解禁或到期后输入框恢复可用。
 
 内置 `Admin` 还会看到“AI 设置”按钮。配置弹窗中的 API Key 始终不回显：留空保存表示保持，勾选清除才会删除已保存密钥。“测试已保存配置”不会自动保存当前表单，避免测试未确认的修改。普通用户可点击输入区 `@AI` 按钮，AI 气泡使用独立浅色样式。
 
@@ -531,9 +547,9 @@ App.vue
 
 ```js
 onMounted(connectWs)          // 进入聊天页即连接
-// 连接成功 → 先拉历史和名单（消除空窗）
+// 连接成功 → 只对齐在线名单；历史默认不拉，用户上滑/点按钮才加载
 ws.onopen = async () => { connected.value = true; retries = 0;
-  await Promise.all([loadHistory(), loadUsers()]) }
+  await loadUsers() }
 // 消息分发
 ws.onmessage = (e) => { const p = JSON.parse(e.data);
   if (p.type === 'message') appendMessage(p.data)        // 按 id 去重
@@ -555,6 +571,14 @@ ws.onclose = (event) => {
 
 `style.css` 顶部定义 CSS 变量（`--primary: #4f6df5` 等），全局只有一套明快浅色主题；布局为"header + sidebar + 主聊天区"的 flex 组合，720px 以下自动隐藏侧栏。改主题色只需改变量。
 
+### 7.6 Chrome / Edge 兼容约定
+
+- 目标为 Chrome / Edge 最近两个稳定版；Edge 与 Chrome 同为 Chromium，但版本可能落后，不能只测 Chrome。
+- 每次改前端至少验证：登录、发文字/Emoji/图片、历史滚动加载、用户管理/禁言弹窗、统计、敏感词、AI 配置、退出重连。
+- 避免 `Array.prototype.at`、`Object.hasOwn`、`structuredClone` 等较新 API；滚轮/触摸、`<input type="date">`、`URLSearchParams` 等按标准用法。
+- 自定义滚动条同时提供 WebKit 与 Firefox 分支，不要让 `scrollbar-width` 覆盖 Chromium 的 `::-webkit-scrollbar`。
+- 浮层要检查 `overflow: hidden` 裁剪（表情面板曾因此不可见）；`backdrop-filter` 仅作为增强，不能影响布局与可读性。
+
 ---
 
 ## 8. 测试指南
@@ -562,10 +586,10 @@ ws.onclose = (event) => {
 ### 8.1 单元测试（后端核心逻辑）
 
 ```bash
-mvn test        # ChatRoomTest 10 + ChatRepositoryTest 10 + ImageStorageTest 2 + AiAssistantServiceTest 4
+mvn test        # ChatRoomTest 20 + ChatRepositoryTest 13 + ImageStorageTest 2 + AiAssistantServiceTest 4 + LocalConfigStoreTest 4 = 43
 ```
 
-覆盖：登录产生系统消息、重名拒绝、敏感词替换、历史上限、禁言/解禁、角色/头像同步、消息删除、图片跨重启恢复与文件清理；SQLite 测试覆盖账户、角色、头像、密码修改与旧密码校验、图片元数据、AI 配置与密钥序列化脱敏、旧库无损迁移和持久历史上限；`ImageStorageTest` 验证图片签名、文件读写删除及伪造图片拒绝。`AiAssistantServiceTest` 使用 JDK 本地 `HttpServer` 模拟上游，不访问真实 AI 服务，验证请求 JSON、Bearer 认证、异步回复持久化、禁用状态和错误脱敏。
+覆盖：登录产生系统消息、重名拒绝、敏感词替换、历史上限、禁言/解禁、角色/头像同步、消息删除、图片跨重启恢复与文件清理；SQLite 测试覆盖账户、角色、头像、密码修改与旧密码校验、图片元数据、旧库无损迁移和持久历史上限；`LocalConfigStoreTest` 覆盖敏感词/AI JSON 与旧表迁移；`ImageStorageTest` 验证图片签名、文件读写删除及伪造图片拒绝。`AiAssistantServiceTest` 使用 JDK 本地 `HttpServer` 模拟上游，不访问真实 AI 服务，验证请求 JSON、Bearer 认证、异步回复持久化、禁用状态和错误脱敏。
 
 ### 8.2 REST 冒烟（curl，见第 5 节示例）
 
@@ -680,6 +704,7 @@ Tomcat.addServlet(ctx, "searchServlet", new SearchServlet(chatRoom)).addMapping(
 | 改了 Java 代码不生效 | `exec:java` 无热加载 | 重启：`Ctrl-C` 后再 `mvn compile exec:java` |
 | Maven 编译报 release 21 无效 | Maven 用的 JDK < 21 | `JAVA_HOME` 指向 JDK 21 |
 | 测试间相互影响（409） | ChatRoom 是同一个 JVM 内状态 | 每个用例 new `ChatRoom`；集成测试用随机用户名 + 登出清理 |
+| 登录 409 或 WS 1008「已在其他连接在线」 | 同一账户已被另一 HTTP 会话占用（显式登出会立即释放；异常断线有 30 秒宽限） | 关闭旧页面或等宽限结束 |
 | 消息偶发重复 | WS 重连与 REST 拉取重叠 | 正常现象，前端已按消息 id 去重 |
 | `@AI` 回复提示未配置或未启用 | Admin 尚未保存完整配置或启用开关关闭 | 用内置 `Admin` 打开“AI 设置”，保存后先测试连接再启用 |
 | AI 测试提示 401 / 404 / 429 | 密钥错误 / 地址或模型路径错误 / 限流或额度不足 | 按提示检查配置；接口需兼容非流式 `chat/completions` |
@@ -690,10 +715,10 @@ Tomcat.addServlet(ctx, "searchServlet", new SearchServlet(chatRoom)).addMapping(
 | --- | --- | --- |
 | HTTP/WS 端口 | 8080（`APP_PORT` 可改） | `Main` |
 | 会话超时 | 60 分钟 | `Main`（`setSessionTimeout`） |
-| 消息历史上限 | 200 条 | `ChatRoom.MAX_HISTORY` |
+| 内存历史热窗口 | 200 条（数据库永久保留） | `ChatRoom.MAX_HISTORY` |
 | 单条消息长度 | ≤ 500 字符 | `MessagesServlet.MAX_CONTENT_LENGTH` |
 | 用户名 | 2~20 字符（trim 后） | `LoginServlet` |
-| 敏感词 | 去死 / 傻逼 / 笨蛋 → `**` | `ChatRoom.SENSITIVE_WORDS` |
+| 敏感词 | 去死 / 傻逼 / 笨蛋 → `**` | `config/sensitive-words.json` + `LocalConfigStore` |
 | 重连退避 | 1s 起步，步进 1s，上限 5s | `ChatView` `connectWs` |
 | 消息 id | 从 1 自增 | `ChatRoom.idGen` |
 | 时间戳 | epoch 毫秒，前端 `zh-CN HH:mm` 本地化 | `Message.createdAt` / `formatTime` |

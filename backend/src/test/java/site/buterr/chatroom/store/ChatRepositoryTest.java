@@ -10,16 +10,17 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import site.buterr.chatroom.model.Account;
-import site.buterr.chatroom.model.AiSettings;
 import site.buterr.chatroom.model.ChatImage;
 import site.buterr.chatroom.model.Message;
 import site.buterr.chatroom.model.Role;
-import site.buterr.chatroom.util.JsonUtil;
 
 class ChatRepositoryTest {
 
@@ -33,29 +34,60 @@ class ChatRepositoryTest {
         repository.register("alice", "Alice", "correct-password");
 
         ChatRepository reopened = new ChatRepository(database);
-        Account authenticated = reopened.authenticate("ALICE", "correct-password").orElseThrow();
+        Account authenticated = reopened.authenticate("alice", "correct-password").orElseThrow();
         assertEquals("Alice", authenticated.displayName());
         assertEquals(Role.USER, authenticated.role());
         assertTrue(reopened.authenticate("alice", "wrong-password").isEmpty());
+        // Username uniqueness is NOCASE, but login itself is case-sensitive.
+        assertTrue(reopened.authenticate("ALICE", "correct-password").isEmpty());
         assertThrows(DuplicateAccountException.class,
                 () -> reopened.register("Alice", "Another Alice", "another-password"));
     }
 
     @Test
-    void messagesSurviveReopenAndAreTrimmed() {
+    void messagesSurviveReopenAndAreNotTrimmed() {
         Path database = temporaryDirectory.resolve("chat.db");
         ChatRepository repository = new ChatRepository(database);
-        repository.saveMessage("system", null, null, "joined", 1, 2);
-        repository.saveMessage("chat", "alice", "Alice", "first", 2, 2);
-        repository.saveMessage("chat", "alice", "Alice", "second", 3, 2);
+        repository.saveMessage("system", null, null, "joined", 1);
+        repository.saveMessage("chat", "alice", "Alice", "first", 2);
+        repository.saveMessage("chat", "alice", "Alice", "second", 3);
 
-        var messages = new ChatRepository(database).loadRecentMessages(2);
-        assertEquals(2, messages.size());
-        assertEquals("first", messages.get(0).content());
-        assertEquals("second", messages.get(1).content());
-        assertEquals("alice", messages.get(0).username());
-        assertEquals("Alice", messages.get(0).displayName());
-        assertFalse(messages.stream().anyMatch(message -> message.content().equals("joined")));
+        var messages = new ChatRepository(database).loadRecentMessages(10);
+        assertEquals(3, messages.size());
+        assertEquals("joined", messages.get(0).content());
+        assertEquals("first", messages.get(1).content());
+        assertEquals("second", messages.get(2).content());
+        assertEquals("alice", messages.get(1).username());
+        assertEquals("Alice", messages.get(1).displayName());
+    }
+
+    @Test
+    void messagePagesUseKeysetCursors() {
+        Path database = temporaryDirectory.resolve("pages.db");
+        ChatRepository repository = new ChatRepository(database);
+        for (int i = 1; i <= 5; i++) {
+            repository.saveMessage("chat", "alice", "Alice", "m" + i, i);
+        }
+
+        var latest = repository.loadRecentMessages(2);
+        assertEquals(List.of("m4", "m5"), latest.stream().map(message -> message.content()).toList());
+
+        var before = repository.loadMessagesBefore(4, 2);
+        assertEquals(List.of("m2", "m3"), before.stream().map(message -> message.content()).toList());
+
+        var after = repository.loadMessagesAfter(3, 2);
+        assertEquals(List.of("m4", "m5"), after.stream().map(message -> message.content()).toList());
+        assertEquals("m3", repository.findMessage(3).orElseThrow().content());
+    }
+
+    @Test
+    void messageHistoryIsNotTrimmedAtTwoHundred() {
+        Path database = temporaryDirectory.resolve("all-messages.db");
+        ChatRepository repository = new ChatRepository(database);
+        for (int i = 1; i <= 205; i++) {
+            repository.saveMessage("chat", "alice", "Alice", "m" + i, i);
+        }
+        assertEquals(205, repository.loadRecentMessages(300).size());
     }
 
     @Test
@@ -85,8 +117,8 @@ class ChatRepositoryTest {
         Account administrator = repository.authenticate("Admin", "admin").orElseThrow();
         assertEquals(Role.ADMIN, administrator.role());
         assertEquals("Admin", administrator.displayName());
-        assertEquals(Role.ADMIN,
-                new ChatRepository(database).authenticate("ADMIN", "admin").orElseThrow().role());
+        // Login is case-sensitive even though the uniqueness check is NOCASE.
+        assertTrue(new ChatRepository(database).authenticate("ADMIN", "admin").isEmpty());
         assertThrows(DuplicateAccountException.class,
                 () -> repository.register("admin", "Another Admin", "another-password"));
     }
@@ -133,8 +165,8 @@ class ChatRepositoryTest {
     void deleteRemovesChatMessagesButNotSystemMessages() {
         Path database = temporaryDirectory.resolve("chat.db");
         ChatRepository repository = new ChatRepository(database);
-        Message system = repository.saveMessage("system", null, null, "joined", 1, 10);
-        Message chat = repository.saveMessage("chat", "alice", "Alice", "first", 2, 10);
+        Message system = repository.saveMessage("system", null, null, "joined", 1);
+        Message chat = repository.saveMessage("chat", "alice", "Alice", "first", 2);
 
         assertFalse(repository.deleteMessage(system.id()));
         assertTrue(repository.deleteMessage(chat.id()));
@@ -150,7 +182,7 @@ class ChatRepositoryTest {
         ChatImage image = new ChatImage("2d57ef6d-9a50-4f5b-930f-e4f1a7252ee6",
                 "pixel.png", "image/png", 68);
 
-        repository.saveMessage("chat", "alice", "Alice", "", 1, 10, image);
+        repository.saveMessage("chat", "alice", "Alice", "", 1, image);
 
         ChatRepository reopened = new ChatRepository(database);
         assertEquals(image, reopened.findImage(image.id()).orElseThrow());
@@ -199,27 +231,55 @@ class ChatRepositoryTest {
         assertEquals("legacy", migrated.loadRecentMessages(10).get(0).content());
         ChatImage image = new ChatImage("2d57ef6d-9a50-4f5b-930f-e4f1a7252ee6",
                 "pixel.png", "image/png", 68);
-        migrated.saveMessage("chat", "alice", "Alice", "", 2, 10, image);
+        migrated.saveMessage("chat", "alice", "Alice", "", 2, image);
         assertEquals(image, migrated.findImage(image.id()).orElseThrow());
     }
 
     @Test
-    void aiSettingsSurviveRepositoryReopen() {
-        Path database = temporaryDirectory.resolve("ai-settings.db");
+    void messageStatsExcludeSystemAndGroupByDay() {
+        ZoneId zone = ZoneId.of("Asia/Shanghai");
+        LocalDate today = LocalDate.now(zone);
+        long todayNoon = today.atTime(12, 0).atZone(zone).toInstant().toEpochMilli();
+        long yesterdayNoon = today.minusDays(1).atTime(12, 0).atZone(zone).toInstant().toEpochMilli();
+        ChatRepository repository = new ChatRepository(temporaryDirectory.resolve("stats.db"));
+        repository.saveMessage("chat", "alice", "Alice", "a1", todayNoon);
+        repository.saveMessage("chat", "alice", "Alice", "a2", todayNoon + 1);
+        repository.saveMessage("chat", "bob", "Bob", "b1", todayNoon + 2);
+        repository.saveMessage("system", null, null, "joined", todayNoon + 3);
+        repository.saveMessage("chat", "alice", "Alice", "old", yesterdayNoon);
+
+        ChatRepository.MessageStats stats = repository.loadMessageStats(today.minusDays(1), today, zone);
+        assertEquals(3, stats.todayCount());
+        assertEquals(4, stats.totalCount());
+        assertEquals(2, stats.daily().size());
+        assertEquals(1, stats.daily().get(0).count());
+        assertEquals(3, stats.daily().get(1).count());
+        assertEquals(2, stats.activeUsers().size());
+        assertEquals("alice", stats.activeUsers().get(0).username());
+        assertEquals(2, stats.activeUsers().get(0).count());
+
+        repository.markLogin("Admin");
+        ChatRepository.MessageStats afterLogin = repository.loadMessageStats(today.minusDays(1), today, zone);
+        assertEquals(1, afterLogin.todayLoginCount());
+        assertEquals(1, afterLogin.totalUsers());
+    }
+
+    @Test
+    void legacyConfigTablesCanBeReadAndDropped() throws Exception {
+        Path database = temporaryDirectory.resolve("legacy-config.db");
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database.toAbsolutePath());
+                Statement statement = connection.createStatement()) {
+            statement.executeUpdate("CREATE TABLE ai_settings (id INTEGER PRIMARY KEY, base_url TEXT, api_key TEXT, model TEXT, enabled INTEGER, system_prompt TEXT, updated_at INTEGER)");
+            statement.executeUpdate("CREATE TABLE sensitive_words (word TEXT PRIMARY KEY, created_at INTEGER)");
+            statement.executeUpdate("INSERT INTO ai_settings VALUES (1, 'https://legacy.example/v1', 'legacy-key', 'legacy-model', 1, 'legacy prompt', 42)");
+            statement.executeUpdate("INSERT INTO sensitive_words VALUES ('旧敏感词', 42)");
+        }
         ChatRepository repository = new ChatRepository(database);
-        assertFalse(repository.loadAiSettings().enabled());
-        assertFalse(repository.loadAiSettings().hasApiKey());
+        assertEquals("https://legacy.example/v1", repository.loadLegacyAiSettings().orElseThrow().baseUrl());
+        assertEquals(List.of("旧敏感词"), repository.loadLegacySensitiveWords());
 
-        repository.saveAiSettings("https://example.com/v1", "secret-key", "test-model", true, "简洁回答");
-
-        AiSettings restored = new ChatRepository(database).loadAiSettings();
-        assertEquals("https://example.com/v1", restored.baseUrl());
-        assertEquals("secret-key", restored.apiKey());
-        assertEquals("test-model", restored.model());
-        assertTrue(restored.enabled());
-        assertEquals("简洁回答", restored.systemPrompt());
-        assertTrue(restored.updatedAt() > 0);
-        assertFalse(JsonUtil.toJson(restored).contains("secret-key"));
-        assertFalse(JsonUtil.toJson(restored).contains("apiKey"));
+        repository.dropLegacyConfigTables();
+        assertTrue(repository.loadLegacyAiSettings().isEmpty());
+        assertTrue(repository.loadLegacySensitiveWords().isEmpty());
     }
 }

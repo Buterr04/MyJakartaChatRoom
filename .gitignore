@@ -42,3 +42,6 @@ chatroom.db*
 
 # Local uploaded chat images
 uploads/
+
+# Local JSON config (may contain the AI API key)
+config/

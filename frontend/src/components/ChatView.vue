@@ -2,9 +2,15 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import AdminUsersDialog from './AdminUsersDialog.vue'
 import AiSettingsDialog from './AiSettingsDialog.vue'
+import ConfirmDialog from './ConfirmDialog.vue'
 import PasswordDialog from './PasswordDialog.vue'
 import ProfileDialog from './ProfileDialog.vue'
+import PromptDialog from './PromptDialog.vue'
+import RoomIcon from './RoomIcon.vue'
+import RoomSettingsDialog from './RoomSettingsDialog.vue'
+import SensitiveWordsDialog from './SensitiveWordsDialog.vue'
 import SpotlightCard from './SpotlightCard.vue'
+import StatisticsDialog from './StatisticsDialog.vue'
 import UserAvatar from './UserAvatar.vue'
 
 const props = defineProps({
@@ -14,6 +20,8 @@ const emit = defineEmits(['logout', 'account-updated'])
 
 const messages = ref([])
 const users = ref([])
+const room = ref({ name: '聊天室', icon: '💬' })
+const aiEnabled = ref(false)
 const onlineCount = ref(0)
 const connected = ref(false)
 const now = ref(Date.now())
@@ -24,15 +32,48 @@ const actionError = ref('')
 const profileOpen = ref(false)
 const passwordOpen = ref(false)
 const adminOpen = ref(false)
+const sensitiveOpen = ref(false)
+const statsOpen = ref(false)
+const roomSettingsOpen = ref(false)
 const aiSettingsOpen = ref(false)
 const accountRevision = ref(0)
+const confirmState = ref(null)
+const muteState = ref(null)
+const emojiOpen = ref(false)
+const EMOJIS = [
+  '😀', '😄', '😁', '😂', '😊', '😍', '🥰', '😘',
+  '😎', '🤔', '😅', '😭', '😡', '😴', '🤯', '🥳',
+  '😇', '🤗', '🤩', '😳', '😱', '🙃', '😉', '😌',
+  '👍', '👎', '👏', '🙌', '🤝', '🙏', '💪', '👌',
+  '✌️', '🤞', '🫶', '❤️', '🧡', '💛', '💚', '💙',
+  '💜', '🖤', '🤍', '💔', '💕', '💖', '✨', '🔥',
+  '🎉', '🎊', '🌹', '🌸', '🍀', '☀️', '🌈', '⭐',
+  '🍔', '🍰', '🎮', '🎵', '🚀', '🐱', '🐶', '🐼',
+]
 const listEl = ref(null)
 const imageInput = ref(null)
 const messageInput = ref(null)
+const hasMoreOlder = ref(false)
+const loadingOlder = ref(false)
+const historyLoaded = ref(false)
 const deletedMessageIds = new Set()
+let historyCursor = 0
+const PAGE_SIZE = 50
 const isAdmin = computed(() => props.me.role === 'ADMIN')
 const isSuperAdmin = computed(() => isAdmin.value && props.me.username.toLowerCase() === 'admin')
 const isMuted = computed(() => Number(props.me.mutedUntil || 0) > now.value)
+const visibleUsers = computed(() => (
+  isSuperAdmin.value
+    ? users.value
+    : users.value.filter((user) => user.username.toLowerCase() !== 'admin')
+))
+const visibleOnlineCount = computed(() => visibleUsers.value.length)
+
+function canMuteUser(user) {
+  if (!isAdmin.value || !user || user.username === props.me.username) return false
+  if (user.role === 'USER') return true
+  return isSuperAdmin.value && user.username.toLowerCase() !== 'admin'
+}
 
 let ws = null
 let reconnectTimer = null
@@ -43,6 +84,8 @@ let leaving = false
 
 onMounted(() => {
   connectWs()
+  loadRoom()
+  loadAiStatus()
   clockTimer = setInterval(() => {
     now.value = Date.now()
   }, 1000)
@@ -67,8 +110,8 @@ function connectWs() {
   socket.onopen = async () => {
     connected.value = true
     retries = 0
-    // 先建立 WS 再拉历史，两条消息之间没有空窗：拉取之后产生的新消息都会从 WS 推过来
-    await Promise.all([loadHistory(), loadUsers()])
+    // 先建立 WS 再拉历史，两条消息之间没有空窗；重连时只补 lastId 之后的消息
+    await Promise.all([syncHistory(), loadUsers()])
   }
 
   socket.onmessage = (event) => {
@@ -79,6 +122,10 @@ function connectWs() {
       removeMessage(packet.data.id)
     } else if (packet.type === 'accountUpdated') {
       applyAccount(packet.data)
+    } else if (packet.type === 'roomUpdated') {
+      applyRoom(packet.data)
+    } else if (packet.type === 'aiStatus') {
+      aiEnabled.value = Boolean(packet.data?.enabled)
     } else if (packet.type === 'online') {
       users.value = packet.data.users
       onlineCount.value = packet.data.count
@@ -89,6 +136,8 @@ function connectWs() {
   socket.onclose = async (event) => {
     if (ws !== socket) return
     connected.value = false
+    // Intentional logout already handled by logout(); do not query the session again.
+    if (leaving) return
     // 1008 = 服务端拒绝（未登录/会话过期），回到登录页而不是无限重连
     if (event.code === 1008) {
       leaving = true
@@ -124,11 +173,138 @@ async function webSocketRejection() {
   }
 }
 
-async function loadHistory() {
-  const res = await fetch('/api/messages')
-  if (res.ok) {
-    messages.value = (await res.json()).messages.filter((message) => !deletedMessageIds.has(message.id))
-    scrollBottom()
+function mergeMessages(...lists) {
+  const byId = new Map()
+  for (const list of lists) {
+    for (const message of list) {
+      if (!deletedMessageIds.has(message.id)) byId.set(message.id, message)
+    }
+  }
+  return [...byId.values()].sort((left, right) => left.id - right.id)
+}
+
+function historyMessages(list) {
+  return (list || []).filter((message) => message.type !== 'system' && !deletedMessageIds.has(message.id))
+}
+
+async function loadInitialHistory() {
+  if (loadingOlder.value) return
+  loadingOlder.value = true
+  const el = listEl.value
+  const previousHeight = el ? el.scrollHeight : 0
+  const hadMessages = messages.value.length > 0
+  try {
+    const res = await fetch(`/api/messages?limit=${PAGE_SIZE}`)
+    if (!res.ok) return
+    const data = await res.json()
+    const rows = data.messages || []
+    historyCursor = rows.length ? rows[0].id : 0
+    // 历史记录只显示聊天消息；system 消息只在在线时通过 WS 实时显示。
+    messages.value = mergeMessages(historyMessages(rows), messages.value)
+    hasMoreOlder.value = Boolean(data.hasMore)
+    historyLoaded.value = true
+    await nextTick()
+    if (hadMessages) {
+      if (el) el.scrollTop = el.scrollHeight - previousHeight
+    } else {
+      scrollBottom()
+    }
+  } finally {
+    loadingOlder.value = false
+  }
+}
+
+/** Reconnect catch-up: only after the user has explicitly loaded history. */
+async function syncHistory() {
+  if (!historyLoaded.value) return
+  if (messages.value.length === 0) {
+    await loadInitialHistory()
+    return
+  }
+  let after = messages.value[messages.value.length - 1].id
+  for (let page = 0; page < 10; page += 1) {
+    const res = await fetch(`/api/messages?after=${after}&limit=200`)
+    if (!res.ok) break
+    const data = await res.json()
+    const rows = data.messages || []
+    if (rows.length === 0) break
+    const incoming = historyMessages(rows)
+    if (incoming.length > 0) messages.value = mergeMessages(messages.value, incoming)
+    // 用原始行推进游标，避免整页都是 system 消息时提前停止。
+    after = rows[rows.length - 1].id
+    if (!data.hasMore) break
+  }
+  scrollBottom()
+}
+
+async function loadOlder() {
+  if (!historyLoaded.value) {
+    await loadInitialHistory()
+    return
+  }
+  if (loadingOlder.value || !hasMoreOlder.value) return
+  const before = historyCursor || (messages.value.length ? messages.value[0].id : 0)
+  if (!before) return
+  loadingOlder.value = true
+  const el = listEl.value
+  const previousHeight = el ? el.scrollHeight : 0
+  try {
+    const res = await fetch(`/api/messages?before=${before}&limit=${PAGE_SIZE}`)
+    if (!res.ok) return
+    const data = await res.json()
+    const rows = data.messages || []
+    historyCursor = rows.length ? rows[0].id : before
+    messages.value = mergeMessages(historyMessages(rows), messages.value)
+    hasMoreOlder.value = Boolean(data.hasMore)
+    await nextTick()
+    if (el) el.scrollTop = el.scrollHeight - previousHeight
+  } finally {
+    loadingOlder.value = false
+  }
+}
+
+function onScroll() {
+  const el = listEl.value
+  if (!el || el.scrollTop >= 40) return
+  // Initial history is explicit (wheel/touch/button); scroll only pages older history.
+  if (historyLoaded.value) loadOlder()
+}
+
+let touchStartY = 0
+
+function onWheel(event) {
+  const el = listEl.value
+  if (el && el.scrollTop > 0) return
+  if (!historyLoaded.value) {
+    loadInitialHistory()
+  } else if (hasMoreOlder.value) {
+    loadOlder()
+  }
+}
+
+function loadHistory() {
+  if (loadingOlder.value) return
+  if (!historyLoaded.value) {
+    loadInitialHistory()
+  } else if (hasMoreOlder.value) {
+    loadOlder()
+  }
+}
+
+function onTouchStart(event) {
+  touchStartY = event.touches[0]?.clientY ?? 0
+}
+
+function onTouchMove(event) {
+  const el = listEl.value
+  if (el && el.scrollTop > 0) return
+  const currentY = event.touches[0]?.clientY ?? touchStartY
+  // 聊天室常见两种手势：手指下滑（拉出旧消息）和上滑（列表到顶后继续滑）。
+  if (Math.abs(currentY - touchStartY) <= 30) return
+  if (!historyLoaded.value) {
+    loadInitialHistory()
+  } else if (hasMoreOlder.value) {
+    loadOlder()
   }
 }
 
@@ -141,11 +317,44 @@ async function loadUsers() {
   }
 }
 
+async function loadRoom() {
+  try {
+    const res = await fetch('/api/room')
+    if (!res.ok) return
+    const data = await res.json()
+    applyRoom(data.room)
+  } catch {
+    // Keep the default branding; the chat itself is unaffected.
+  }
+}
+
+async function loadAiStatus() {
+  try {
+    const res = await fetch('/api/ai/status')
+    if (!res.ok) return
+    const data = await res.json()
+    aiEnabled.value = Boolean(data.enabled)
+  } catch {
+    aiEnabled.value = false
+  }
+}
+
+function applyRoom(branding) {
+  if (!branding) return
+  room.value = {
+    name: branding.name || '聊天室',
+    icon: branding.icon || '💬',
+  }
+  document.title = room.value.name
+}
+
 function appendMessage(message) {
   // WS 重连后与 REST 拉取可能重叠，按消息 id 去重
   if (deletedMessageIds.has(message.id) || messages.value.some((m) => m.id === message.id)) return
+  const el = listEl.value
+  const stickToBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 120
   messages.value.push(message)
-  scrollBottom()
+  if (stickToBottom) scrollBottom()
 }
 
 function removeMessage(id) {
@@ -166,6 +375,7 @@ function applyAccount(account) {
 async function send() {
   const content = draft.value.trim()
   if (!content || sending.value || !connected.value || isMuted.value) return
+  emojiOpen.value = false
   sending.value = true
   sendError.value = ''
   try {
@@ -189,12 +399,28 @@ async function send() {
 }
 
 function chooseImage() {
+  emojiOpen.value = false
   sendError.value = ''
   imageInput.value?.click()
 }
 
+function insertEmoji(emoji) {
+  const el = messageInput.value
+  const start = el?.selectionStart ?? draft.value.length
+  const end = el?.selectionEnd ?? start
+  const next = draft.value.slice(0, start) + emoji + draft.value.slice(end)
+  draft.value = next.slice(0, 500)
+  nextTick(() => {
+    if (!el) return
+    el.focus()
+    const position = Math.min(start + emoji.length, draft.value.length)
+    el.setSelectionRange(position, position)
+  })
+}
+
 function prepareAiPrompt() {
-  if (sending.value || !connected.value || isMuted.value) return
+  if (!aiEnabled.value || sending.value || !connected.value || isMuted.value) return
+  emojiOpen.value = false
   if (!/^@AI(?:\s|$)/i.test(draft.value.trimStart())) {
     draft.value = '@AI ' + draft.value
   }
@@ -231,34 +457,55 @@ async function imageSelected(event) {
   }
 }
 
-async function deleteMessage(message) {
-  if (!isAdmin.value || !window.confirm('确定删除这条消息吗？')) return
+function deleteMessage(message) {
+  if (!isSuperAdmin.value) return
+  confirmState.value = {
+    title: '删除消息',
+    message: '确定删除这条消息吗？删除后所有人都看不到。',
+    confirmText: '删除',
+    messageId: message.id,
+  }
+}
+
+async function confirmDeleteMessage() {
+  const messageId = confirmState.value?.messageId
+  confirmState.value = null
+  if (!messageId) return
   actionError.value = ''
   try {
-    const res = await fetch(`/api/admin/messages/${message.id}`, { method: 'DELETE' })
+    const res = await fetch(`/api/super-admin/messages/${messageId}`, { method: 'DELETE' })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
       actionError.value = data.error || '删除失败，请稍后再试'
       return
     }
-    removeMessage(message.id)
+    removeMessage(messageId)
   } catch {
     actionError.value = '网络异常，请稍后再试'
   }
 }
 
-async function muteUser(user) {
-  if (!isAdmin.value) return
-  let minutes = 0
-  if (!isUserMuted(user)) {
-    const input = window.prompt(`禁言 ${user.displayName} 多少分钟？（0~10080）`, '10')
-    if (input === null) return
-    minutes = Number(input)
-    if (!Number.isInteger(minutes) || minutes < 0 || minutes > 10080) {
-      actionError.value = '禁言时长需为 0~10080 的整数分钟'
-      return
-    }
+function muteUser(user) {
+  if (!canMuteUser(user)) return
+  if (isUserMuted(user)) {
+    void applyMute(user, 0)
+    return
   }
+  muteState.value = {
+    user,
+    title: '禁言用户',
+    minutes: '10',
+  }
+}
+
+async function confirmMute(minutes) {
+  const user = muteState.value?.user
+  muteState.value = null
+  if (!user) return
+  await applyMute(user, minutes)
+}
+
+async function applyMute(user, minutes) {
   actionError.value = ''
   try {
     const res = await fetch(`/api/admin/users/${encodeURIComponent(user.username)}/mute`, {
@@ -278,6 +525,7 @@ async function muteUser(user) {
 }
 
 async function logout() {
+  if (leaving) return
   leaving = true
   clearTimeout(reconnectTimer)
   ws?.close()
@@ -331,19 +579,22 @@ function imageUrl(image) {
     <div class="chat-header-glass glass-panel">
       <SpotlightCard class="chat-header-spotlight">
         <header class="chat-header">
-          <div class="brand"><span class="logo">💬</span>聊天室</div>
+          <div class="brand"><RoomIcon :icon="room.icon" class="logo" /><span class="brand-name">{{ room.name }}</span></div>
           <div class="header-right">
             <span class="conn" :class="connected ? 'on' : 'off'">
               {{ connected ? '已连接' : '连接中…' }}
             </span>
-            <span v-if="isAdmin" class="role-chip">管理员</span>
+            <span v-if="isSuperAdmin" class="role-chip">超级管理员</span>
+            <span v-else-if="isAdmin" class="role-chip">聊天室管理员</span>
             <button v-if="isSuperAdmin" class="btn-manage" @click="aiSettingsOpen = true">AI 设置</button>
             <button v-if="isAdmin" class="btn-manage" @click="adminOpen = true">用户管理</button>
+            <button v-if="isAdmin" class="btn-manage" @click="roomSettingsOpen = true">房间设置</button>
+            <button v-if="isSuperAdmin" class="btn-manage" @click="statsOpen = true">统计</button>
+            <button v-if="isSuperAdmin" class="btn-manage" @click="sensitiveOpen = true">敏感词</button>
             <button class="profile-trigger" title="打开个人主页" @click="profileOpen = true">
               <UserAvatar :user="me" />
               <span>{{ me.displayName }}</span>
             </button>
-            <button class="btn-ghost" @click="logout">退出</button>
           </div>
         </header>
       </SpotlightCard>
@@ -362,18 +613,49 @@ function imageUrl(image) {
         <SpotlightCard class="sidebar-spotlight" spotlight-color="rgba(255, 255, 255, 0.4)">
           <aside class="sidebar">
             <div class="side-title">
-              在线用户 <span class="count">{{ onlineCount }}</span>
+              在线用户 <span class="count">{{ visibleOnlineCount }}</span>
             </div>
             <ul>
-              <li v-for="u in users" :key="u.username">
+              <li v-for="u in visibleUsers" :key="u.username">
                 <UserAvatar :user="u" :class="{ self: u.username === me.username }" />
                 <span class="name">
                   {{ u.displayName }}<i v-if="u.username === me.username">（我）</i>
-                  <i v-if="u.role === 'ADMIN'">（管理员）</i>
-                  <i v-if="isUserMuted(u)">（已禁言）</i>
+                  <i
+                    v-if="u.role === 'ADMIN' && u.username.toLowerCase() === 'admin'"
+                    class="role-mark super-admin-mark"
+                    title="超级管理员"
+                    aria-label="超级管理员"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M3 18h18l-1.7-9-4.6 3.2L12 6l-2.7 6.2L4.7 9 3 18Z" />
+                      <path d="M5 20h14" />
+                    </svg>
+                  </i>
+                  <i
+                    v-else-if="u.role === 'ADMIN'"
+                    class="role-mark admin-mark"
+                    title="管理员"
+                    aria-label="管理员"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M12 3 19 6v5c0 4.4-3 8.2-7 10-4-1.8-7-5.6-7-10V6l7-3Z" />
+                      <path d="m9 12 2 2 4-4" />
+                    </svg>
+                  </i>
+                  <i
+                    v-if="isUserMuted(u)"
+                    class="role-mark mute-mark"
+                    title="已禁言"
+                    aria-label="已禁言"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M4 9v6h4l5 4V5L8 9H4Z" />
+                      <path d="m16 9 5 6M21 9l-5 6" />
+                    </svg>
+                  </i>
                 </span>
                 <button
-                  v-if="isAdmin && u.username !== me.username"
+                  v-if="canMuteUser(u)"
                   class="user-action"
                   @click="muteUser(u)"
                 >
@@ -386,7 +668,24 @@ function imageUrl(image) {
       </div>
 
       <main class="chat-main">
-        <div ref="listEl" class="msg-list">
+        <div
+          ref="listEl"
+          class="msg-list"
+          @scroll="onScroll"
+          @wheel="onWheel"
+          @touchstart.passive="onTouchStart"
+          @touchmove.passive="onTouchMove"
+        >
+          <div class="load-older" @click="loadHistory">
+            <span v-if="loadingOlder" class="history-note">加载中…</span>
+            <span v-else-if="historyLoaded && !hasMoreOlder && messages.length > 0" class="history-note">
+              没有更多消息
+            </span>
+            <span v-else class="history-note">
+              <span class="hint-touch">下滑加载更多消息</span>
+              <span class="hint-mouse">向下滚动加载更多消息</span>
+            </span>
+          </div>
           <template v-for="m in messages" :key="m.id">
             <div v-if="m.type === 'system'" class="msg sys">
               <span class="sys-pill">{{ m.content }}</span>
@@ -395,7 +694,7 @@ function imageUrl(image) {
               <div class="meta">
                 <span class="who">{{ m.displayName }}</span>
                 <span class="time">{{ formatTime(m.createdAt) }}</span>
-                <button v-if="isAdmin" class="msg-action" @click="deleteMessage(m)">删除</button>
+                <button v-if="isSuperAdmin" class="msg-action" @click="deleteMessage(m)">删除</button>
               </div>
               <div v-if="m.image" class="bubble image-bubble">
                 <a :href="imageUrl(m.image)" target="_blank" rel="noopener" class="chat-image-link">
@@ -410,7 +709,7 @@ function imageUrl(image) {
               <div v-else class="bubble">{{ m.content }}</div>
             </div>
           </template>
-          <div v-if="messages.length === 0" class="empty">
+          <div v-if="messages.length === 0 && historyLoaded" class="empty">
             还没有消息，向在线的伙伴打个招呼吧 👋
           </div>
         </div>
@@ -419,6 +718,21 @@ function imageUrl(image) {
           <SpotlightCard class="composer-spotlight" spotlight-color="rgba(255, 255, 255, 0.46)">
             <footer class="composer">
               <p v-if="sendError" class="send-error">{{ sendError }}</p>
+              <div v-if="emojiOpen" class="emoji-panel" @keydown.esc="emojiOpen = false">
+                <div class="emoji-panel-head">
+                  <span>表情</span>
+                  <button type="button" aria-label="关闭表情" @click="emojiOpen = false">×</button>
+                </div>
+                <div class="emoji-grid">
+                  <button
+                    v-for="(emoji, index) in EMOJIS"
+                    :key="index"
+                    type="button"
+                    :aria-label="`表情 ${emoji}`"
+                    @click="insertEmoji(emoji)"
+                  >{{ emoji }}</button>
+                </div>
+              </div>
               <div class="composer-row">
                 <input
                   ref="imageInput"
@@ -428,6 +742,15 @@ function imageUrl(image) {
                   @change="imageSelected"
                 />
                 <button
+                  class="btn-emoji"
+                  title="表情"
+                  aria-label="打开表情"
+                  :disabled="!connected || sending || isMuted"
+                  @click="emojiOpen = !emojiOpen"
+                >
+                  😊
+                </button>
+                <button
                   class="btn-image"
                   :disabled="!connected || sending || isMuted"
                   @click="chooseImage"
@@ -435,6 +758,7 @@ function imageUrl(image) {
                   {{ sending ? '发送中…' : '图片' }}
                 </button>
                 <button
+                  v-if="aiEnabled"
                   class="btn-ai"
                   title="在消息开头使用 @AI 提问"
                   :disabled="!connected || sending || isMuted"
@@ -470,6 +794,7 @@ function imageUrl(image) {
       @close="profileOpen = false"
       @updated="applyAccount"
       @change-password="openPasswordDialog"
+      @logout="logout"
     />
     <PasswordDialog v-if="passwordOpen" @close="passwordOpen = false" />
     <AdminUsersDialog
@@ -477,10 +802,40 @@ function imageUrl(image) {
       :me="me"
       :online-users="users"
       :refresh-token="accountRevision"
+      :is-super-admin="isSuperAdmin"
       @close="adminOpen = false"
       @updated="applyAccount"
       @mute="muteUser"
     />
     <AiSettingsDialog v-if="aiSettingsOpen" @close="aiSettingsOpen = false" />
+    <SensitiveWordsDialog v-if="sensitiveOpen" @close="sensitiveOpen = false" />
+    <StatisticsDialog v-if="statsOpen" @close="statsOpen = false" />
+    <RoomSettingsDialog
+      v-if="roomSettingsOpen"
+      :room="room"
+      @close="roomSettingsOpen = false"
+      @saved="applyRoom"
+    />
+    <ConfirmDialog
+      v-if="confirmState"
+      :title="confirmState.title"
+      :message="confirmState.message"
+      :confirm-text="confirmState.confirmText"
+      danger
+      @confirm="confirmDeleteMessage"
+      @close="confirmState = null"
+    />
+    <PromptDialog
+      v-if="muteState"
+      :title="muteState.title"
+      :message="`${muteState.user.displayName}：设置禁言时长`"
+      label="分钟（0 表示解禁，范围 0~10080）"
+      :default-value="muteState.minutes"
+      :min="0"
+      :max="10080"
+      confirm-text="确定"
+      @confirm="confirmMute"
+      @close="muteState = null"
+    />
   </div>
 </template>
