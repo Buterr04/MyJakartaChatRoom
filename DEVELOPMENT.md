@@ -144,7 +144,8 @@ AI 配置不通过环境变量管理。使用内置 `Admin` 登录后打开“AI
 ### 3.6 常用命令速查
 
 ```bash
-mvn test                              # 跑后端单元测试
+mvn test                              # 跑后端单元测试（43）
+mvn verify                            # 单元 + 集成测试（53）
 mvn clean package                     # 完整构建（含测试）
 mvn compile exec:java                 # 启动后端
 lsof -ti:8080 | xargs kill            # 杀掉占用 8080 的旧进程（ macOS）
@@ -586,7 +587,8 @@ ws.onclose = (event) => {
 ### 8.1 单元测试（后端核心逻辑）
 
 ```bash
-mvn test        # ChatRoomTest 20 + ChatRepositoryTest 13 + ImageStorageTest 2 + AiAssistantServiceTest 4 + LocalConfigStoreTest 4 = 43
+mvn test        # 43 单元：ChatRoomTest 20 + ChatRepositoryTest 13 + ImageStorageTest 2 + AiAssistantServiceTest 4 + LocalConfigStoreTest 4
+mvn verify      # 43 单元 + 10 集成（HttpAuthIT/MessageWebSocketIT/SingleSessionIT/RoomBroadcastIT）
 ```
 
 覆盖：登录产生系统消息、重名拒绝、敏感词替换、历史上限、禁言/解禁、角色/头像同步、消息删除、图片跨重启恢复与文件清理；SQLite 测试覆盖账户、角色、头像、密码修改与旧密码校验、图片元数据、旧库无损迁移和持久历史上限；`LocalConfigStoreTest` 覆盖敏感词/AI JSON 与旧表迁移；`ImageStorageTest` 验证图片签名、文件读写删除及伪造图片拒绝。`AiAssistantServiceTest` 使用 JDK 本地 `HttpServer` 模拟上游，不访问真实 AI 服务，验证请求 JSON、Bearer 认证、异步回复持久化、禁用状态和错误脱敏。

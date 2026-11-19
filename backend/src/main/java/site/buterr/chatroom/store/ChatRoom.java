@@ -143,7 +143,7 @@ public class ChatRoom {
                 leave(previous, httpSessionId);
             }
             if (owner != null && !owner.equals(httpSessionId)) {
-                leave(user.username(), owner);
+                leave(user.username(), owner, CloseCodes.VIOLATED_POLICY, "该账户已在其他设备登录");
                 // The previous browser is kicked for good: after the new owner logs out,
                 // its still-alive HTTP session must not silently resume.
                 revokedSessions.add(owner);
@@ -193,6 +193,10 @@ public class ChatRoom {
     }
 
     public void leave(String username, String httpSessionId) {
+        leave(username, httpSessionId, CloseCodes.GOING_AWAY, "logged out");
+    }
+
+    public void leave(String username, String httpSessionId, CloseCodes closeCode, String reason) {
         List<Session> sockets = List.of();
         synchronized (this) {
             Set<Session> bound = wsByHttpSession.remove(httpSessionId);
@@ -225,14 +229,16 @@ public class ChatRoom {
                 httpSessionIdByUser.remove(username);
             }
             httpSessionIdByUser.entrySet().removeIf(entry -> entry.getValue().equals(httpSessionId));
-            sessionOwnerByUser.remove(username, httpSessionId);
+            if (username != null) {
+                sessionOwnerByUser.remove(username, httpSessionId);
+            }
             sessionOwnerByUser.entrySet().removeIf(entry -> entry.getValue().equals(httpSessionId));
             revokedSessions.remove(httpSessionId);
             for (User user : removed) {
                 publishLeave(user);
             }
         }
-        sockets.forEach(this::closeQuietly);
+        sockets.forEach(ws -> closeQuietly(ws, closeCode, reason));
     }
 
     private void publishLeave(User user) {
@@ -852,12 +858,17 @@ public class ChatRoom {
         }
     }
 
-    private void closeQuietly(Session ws) {
+    private void closeQuietly(Session ws, CloseCodes closeCode, String reason) {
         try {
-            ws.close(new CloseReason(CloseCodes.GOING_AWAY, "logged out"));
+            ws.close(new CloseReason(closeCode, reason));
         } catch (Exception ignored) {
             // Container callbacks perform the remaining cleanup.
         }
+    }
+
+    public void close() {
+        broadcaster.shutdownNow();
+        presenceScheduler.shutdownNow();
     }
 
     private void trimHistory() {

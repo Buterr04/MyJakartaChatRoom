@@ -183,5 +183,6 @@ MyJakartaChatRoom/
 
 ```bash
 cd backend
-mvn test        # 43 项：聊天室规则、角色/头像/密码、图片存取、AI 请求与回复、统计、旧库迁移及持久化
+mvn test        # 43 项单元测试：聊天室规则、角色/头像/密码、图片存取、AI 请求与回复、统计、旧库迁移及持久化
+mvn verify      # 43 单元 + 10 集成：Servlet/Filter/WebSocket/SSO
 ```
