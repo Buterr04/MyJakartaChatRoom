@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.net.http.HttpResponse;
 import java.util.Map;
 
+import com.fasterxml.jackson.databind.JsonNode;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -42,6 +44,22 @@ class HttpAuthIT extends IntegrationTestSupport {
         assertEquals(200, admin.get("/api/super-admin/statistics?from=2026-11-01&to=2026-11-19&granularity=day").statusCode());
         assertEquals(200, admin.get("/api/super-admin/sensitive-words").statusCode());
         assertTrue(admin.json(admin.get("/api/super-admin/statistics")).has("today"));
+    }
+
+    @Test
+    void avatarLookupRequiresLoginAndReturnsKnownAvatar() throws Exception {
+        assertEquals(401, anonymous().get("/api/avatars?usernames=alice").statusCode());
+
+        TestHttp alice = registerAndLogin("alice", "password123");
+        String avatar = "data:image/png;base64,AAAA";
+        server.repository().setAvatar("alice", avatar);
+
+        HttpResponse<String> response = alice.get("/api/avatars?usernames=ALICE,bob");
+        assertEquals(200, response.statusCode());
+        JsonNode avatars = JSON.readTree(response.body()).path("avatars");
+        String avatarKey = avatars.has("alice") ? "alice" : "Alice";
+        assertEquals(avatar, avatars.path(avatarKey).asText());
+        assertTrue(avatars.path("bob").isMissingNode() || avatars.path("bob").isNull());
     }
 
     @Test

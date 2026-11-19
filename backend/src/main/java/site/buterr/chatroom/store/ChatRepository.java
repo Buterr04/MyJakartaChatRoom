@@ -11,6 +11,8 @@ import java.sql.Types;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -104,6 +106,39 @@ public final class ChatRepository {
             return accounts;
         } catch (SQLException e) {
             throw new IllegalStateException("无法查询账户列表", e);
+        }
+    }
+
+    /**
+     * Current avatars for historical message authors. Unknown usernames are absent from the
+     * returned map; the frontend treats absence as the default initial avatar.
+     */
+    public Map<String, String> loadAvatars(Collection<String> usernames) {
+        Set<String> names = new HashSet<>();
+        for (String username : usernames) {
+            if (username != null && !username.isBlank()) {
+                names.add(username.trim());
+            }
+        }
+        if (names.isEmpty()) {
+            return Map.of();
+        }
+        String placeholders = String.join(",", Collections.nCopies(names.size(), "?"));
+        String sql = "SELECT username, avatar FROM accounts WHERE username IN (" + placeholders + ")";
+        Map<String, String> avatars = new HashMap<>();
+        try (Connection connection = connect(); PreparedStatement statement = connection.prepareStatement(sql)) {
+            int index = 1;
+            for (String username : names) {
+                statement.setString(index++, username);
+            }
+            try (ResultSet result = statement.executeQuery()) {
+                while (result.next()) {
+                    avatars.put(result.getString("username"), result.getString("avatar"));
+                }
+            }
+            return avatars;
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法查询用户头像", e);
         }
     }
 

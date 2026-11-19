@@ -20,6 +20,7 @@ const emit = defineEmits(['logout', 'account-updated'])
 
 const messages = ref([])
 const users = ref([])
+const avatarByUsername = ref({})
 const room = ref({ name: '聊天室', icon: '💬' })
 const aiEnabled = ref(false)
 const onlineCount = ref(0)
@@ -129,6 +130,7 @@ function connectWs() {
     } else if (packet.type === 'online') {
       users.value = packet.data.users
       onlineCount.value = packet.data.count
+      cacheUserAvatars(packet.data.users)
     }
     // pong：保活心跳，无需处理
   }
@@ -203,6 +205,7 @@ async function loadInitialHistory() {
     messages.value = mergeMessages(historyMessages(rows), messages.value)
     hasMoreOlder.value = Boolean(data.hasMore)
     historyLoaded.value = true
+    await loadAvatars(rows)
     await nextTick()
     if (hadMessages) {
       if (el) el.scrollTop = el.scrollHeight - previousHeight
@@ -230,6 +233,7 @@ async function syncHistory() {
     if (rows.length === 0) break
     const incoming = historyMessages(rows)
     if (incoming.length > 0) messages.value = mergeMessages(messages.value, incoming)
+    await loadAvatars(rows)
     // 用原始行推进游标，避免整页都是 system 消息时提前停止。
     after = rows[rows.length - 1].id
     if (!data.hasMore) break
@@ -256,6 +260,7 @@ async function loadOlder() {
     historyCursor = rows.length ? rows[0].id : before
     messages.value = mergeMessages(historyMessages(rows), messages.value)
     hasMoreOlder.value = Boolean(data.hasMore)
+    await loadAvatars(rows)
     await nextTick()
     if (el) el.scrollTop = el.scrollHeight - previousHeight
   } finally {
@@ -314,6 +319,64 @@ async function loadUsers() {
     const data = await res.json()
     users.value = data.users
     onlineCount.value = data.count
+    cacheUserAvatars(data.users)
+  }
+}
+
+function avatarKey(username) {
+  return String(username || '').toLowerCase()
+}
+
+function cacheAvatar(username, avatar) {
+  if (!username) return
+  avatarByUsername.value = {
+    ...avatarByUsername.value,
+    [avatarKey(username)]: avatar || null,
+  }
+}
+
+function cacheUserAvatars(list) {
+  for (const user of list || []) {
+    cacheAvatar(user.username, user.avatar)
+  }
+}
+
+function messageAvatar(message) {
+  return {
+    username: message.username,
+    displayName: message.displayName,
+    avatar: avatarByUsername.value[avatarKey(message.username)] ?? null,
+  }
+}
+
+async function loadAvatars(list) {
+  const names = []
+  const seen = new Set()
+  for (const message of list || []) {
+    if (!message.username) continue
+    const key = avatarKey(message.username)
+    if (!seen.has(key) && !(key in avatarByUsername.value)) {
+      seen.add(key)
+      names.push(message.username)
+    }
+  }
+  if (names.length === 0) return
+
+  try {
+    const res = await fetch(`/api/avatars?usernames=${encodeURIComponent(names.join(','))}`)
+    if (!res.ok) return
+    const data = await res.json()
+    const avatars = data.avatars || {}
+    const keys = Object.keys(avatars)
+    const next = { ...avatarByUsername.value }
+    for (const name of names) {
+      const key = avatarKey(name)
+      const matched = keys.find((candidate) => avatarKey(candidate) === key)
+      next[key] = matched ? avatars[matched] : null
+    }
+    avatarByUsername.value = next
+  } catch {
+    // Fall back to the initial-letter avatar; history remains usable.
   }
 }
 
@@ -364,6 +427,7 @@ function removeMessage(id) {
 
 function applyAccount(account) {
   accountRevision.value += 1
+  cacheAvatar(account.username, account.avatar)
   users.value = users.value.map((user) => (
     user.username.toLowerCase() === account.username.toLowerCase() ? { ...user, ...account } : user
   ))
@@ -692,6 +756,7 @@ function imageUrl(image) {
             </div>
             <div v-else class="msg" :class="[isOwn(m) ? 'own' : 'other', { ai: isAi(m) }]">
               <div class="meta">
+                <UserAvatar v-if="m.username" :user="messageAvatar(m)" class="msg-avatar" />
                 <span class="who">{{ m.displayName }}</span>
                 <span class="time">{{ formatTime(m.createdAt) }}</span>
                 <button v-if="isSuperAdmin" class="msg-action" @click="deleteMessage(m)">删除</button>

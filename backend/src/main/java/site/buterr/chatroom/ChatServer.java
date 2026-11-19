@@ -28,6 +28,7 @@ import site.buterr.chatroom.servlet.AdminUsersServlet;
 import site.buterr.chatroom.servlet.AiSettingsServlet;
 import site.buterr.chatroom.servlet.AiStatusServlet;
 import site.buterr.chatroom.servlet.AvatarServlet;
+import site.buterr.chatroom.servlet.AvatarLookupServlet;
 import site.buterr.chatroom.servlet.ImageMessageServlet;
 import site.buterr.chatroom.servlet.ImageServlet;
 import site.buterr.chatroom.servlet.LoginServlet;
@@ -157,6 +158,8 @@ public final class ChatServer implements AutoCloseable {
         Tomcat.addServlet(ctx, "webSocketStatusServlet", new WebSocketStatusServlet(chatRoom))
                 .addMapping("/api/websocket-status");
         Tomcat.addServlet(ctx, "avatarServlet", new AvatarServlet(chatRoom)).addMapping("/api/me/avatar");
+        Tomcat.addServlet(ctx, "avatarLookupServlet", new AvatarLookupServlet(repository))
+                .addMapping("/api/avatars");
         Tomcat.addServlet(ctx, "passwordServlet", new PasswordServlet(repository))
                 .addMapping("/api/me/password");
         Tomcat.addServlet(ctx, "logoutServlet", new LogoutServlet()).addMapping("/api/logout");

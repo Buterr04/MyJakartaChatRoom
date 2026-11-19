@@ -139,6 +139,7 @@ MyJakartaChatRoom/
 | GET | `/api/room` | 公开聊天室名称/图标 | 200 | — |
 | PUT | `/api/admin/room` | 管理员/超级管理员修改名称、图标 | 200 | 400 / 401 / 403 |
 | GET | `/api/ai/status` | 已登录用户读取 AI 开关（控制 @AI 按钮） | 200 | 401 |
+| GET | `/api/avatars?usernames=a,b` | 批量查询历史消息作者头像（最多 100 个） | 200 | 400 / 401 |
 | GET | `/api/super-admin/ai/settings` | Admin 查询 AI 配置，不返回 API Key | 200 | 401 / 403 |
 | PUT | `/api/super-admin/ai/settings` | Admin 保存 AI 配置；Key 留空保持，`clearApiKey:true` 清除 | 200 | 400 / 401 / 403 |
 | POST | `/api/super-admin/ai/settings/test` | Admin 使用已保存配置测试真实接口 | 200 + AI 回复 | 401 / 403 / 502 |
@@ -184,5 +185,5 @@ MyJakartaChatRoom/
 ```bash
 cd backend
 mvn test        # 43 项单元测试：聊天室规则、角色/头像/密码、图片存取、AI 请求与回复、统计、旧库迁移及持久化
-mvn verify      # 43 单元 + 10 集成：Servlet/Filter/WebSocket/SSO
+mvn verify      # 43 单元 + 11 集成：Servlet/Filter/WebSocket/SSO/头像查询
 ```
